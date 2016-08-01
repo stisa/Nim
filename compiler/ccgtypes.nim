@@ -166,7 +166,7 @@ proc mapType(typ: PType): TCTypeKind =
   of tyOpenArray, tyArray, tyVarargs: result = ctArray
   of tyObject, tyTuple: result = ctStruct
   of tyGenericBody, tyGenericInst, tyGenericParam, tyDistinct, tyOrdinal,
-     tyTypeDesc, tyAlias:
+     tyTypeDesc, tyAlias, tyInferred:
     result = mapType(lastSon(typ))
   of tyEnum:
     if firstOrd(typ) < 0:
