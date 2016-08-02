@@ -488,6 +488,7 @@ type
     tfHasStatic
     tfGenericTypeParam
     tfImplicitTypeParam
+    tfInferrableStatic
     tfWildcard        # consider a proc like foo[T, I](x: Type[T, I])
                       # T and I here can bind to both typedesc and static types
                       # before this is determined, we'll consider them to be a
@@ -1068,6 +1069,9 @@ proc isMetaType*(t: PType): bool =
   return t.kind in tyMetaTypes or
          (t.kind == tyStatic and t.n == nil) or
          tfHasMeta in t.flags
+
+proc isUnresolvedStatic*(t: PType): bool =
+  return t.kind == tyStatic and t.n == nil
 
 proc linkTo*(t: PType, s: PSym): PType {.discardable.} =
   t.sym = s
