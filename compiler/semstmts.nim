@@ -1549,7 +1549,7 @@ proc semStmtList(c: PContext, n: PNode, flags: TExprFlags): PNode =
             elif expr[2].typ.isUnresolvedStatic:
               inferConceptStaticParam(c, expr[2].typ, expr[1])
               continue
-
+            
           let verdict = semConstExpr(c, n[i])
           if verdict.intVal == 0:
             localError(result.info, "type class predicate failed")

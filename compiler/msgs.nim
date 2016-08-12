@@ -106,6 +106,7 @@ type
     errXCannotBeClosure, errXMustBeCompileTime,
     errCannotInferTypeOfTheLiteral,
     errCannotInferReturnType,
+    errCannotInferStaticParam,
     errGenericLambdaNotAllowed,
     errCompilerDoesntSupportTarget,
     errExternalAssemblerNotFound,
@@ -368,6 +369,7 @@ const
     errXMustBeCompileTime: "'$1' can only be used in compile-time context",
     errCannotInferTypeOfTheLiteral: "cannot infer the type of the $1",
     errCannotInferReturnType: "cannot infer the return type of the proc",
+    errCannotInferStaticParam: "cannot infer the value of the static param `$1`",
     errGenericLambdaNotAllowed: "A nested proc can have generic parameters only when " &
                                 "it is used as an operand to another routine and the types " &
                                 "of the generic paramers can be inferred from the expected signature.",

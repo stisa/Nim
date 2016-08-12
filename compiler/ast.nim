@@ -1577,7 +1577,7 @@ proc hasPattern*(s: PSym): bool {.inline.} =
   result = isRoutine(s) and s.ast.sons[patternPos].kind != nkEmpty
 
 iterator items*(n: PNode): PNode =
-  for i in 0.. <n.len: yield n.sons[i]
+  for i in 0.. <n.safeLen: yield n.sons[i]
 
 iterator pairs*(n: PNode): tuple[i: int, n: PNode] =
   for i in 0.. <n.len: yield (i, n.sons[i])
@@ -1603,6 +1603,16 @@ proc skipStmtList*(n: PNode): PNode =
     result = n.lastSon
   else:
     result = n
+
+proc findUnresolvedStatic*(n: PNode): PNode =
+  if n.kind == nkSym and n.typ.kind == tyStatic and n.typ.n == nil:
+    return n
+
+  for son in n:
+    let n = son.findUnresolvedStatic
+    if n != nil: return n
+
+  return nil
 
 when false:
   proc containsNil*(n: PNode): bool =
