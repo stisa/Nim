@@ -638,10 +638,10 @@ proc semOverloadedCallAnalyseEffects(c: PContext, n: PNode, nOrig: PNode,
     # for typeof support.
     # for ``type(countup(1,3))``, see ``tests/ttoseq``.
     result = semOverloadedCall(c, n, nOrig,
-      {skProc, skMethod, skConverter, skMacro, skTemplate, skIterator})
+      {skProc, skMethod, skConverter, skMacro, skTemplate, skIterator}, flags)
   else:
     result = semOverloadedCall(c, n, nOrig,
-      {skProc, skMethod, skConverter, skMacro, skTemplate})
+      {skProc, skMethod, skConverter, skMacro, skTemplate}, flags)
 
   if result != nil:
     if result.sons[0].kind != nkSym:
@@ -1709,7 +1709,7 @@ proc tryExpr(c: PContext, n: PNode, flags: TExprFlags = {}): PNode =
   let oldOwnerLen = len(gOwners)
   let oldGenerics = c.generics
   let oldErrorOutputs = errorOutputs
-  errorOutputs = {}
+  if efExplain notin flags: errorOutputs = {}
   let oldContextLen = msgs.getInfoContextLen()
 
   let oldInGenericContext = c.inGenericContext
@@ -2312,8 +2312,20 @@ proc semExpr(c: PContext, n: PNode, flags: TExprFlags = {}): PNode =
   of nkCurlyExpr:
     result = semExpr(c, buildOverloadedSubscripts(n, getIdent"{}"), flags)
   of nkPragmaExpr:
-    # which pragmas are allowed for expressions? `likely`, `unlikely`
-    internalError(n.info, "semExpr() to implement") # XXX: to implement
+    var
+      expr = n[0]
+      pragma = n[1]
+      pragmaName = considerQuotedIdent(pragma[0])
+      flags = flags
+    
+    case whichKeyword(pragmaName)
+    of wExplain:
+      flags.incl efExplain
+    else:
+      # what other pragmas are allowed for expressions? `likely`, `unlikely`
+      invalidPragma(n)
+    
+    result = semExpr(c, n[0], flags)
   of nkPar:
     case checkPar(n)
     of paNone: result = errorNode(c, n)

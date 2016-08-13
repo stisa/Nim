@@ -55,7 +55,7 @@ const
     wPure, wHeader, wCompilerproc, wFinal, wSize, wExtern, wShallow,
     wImportCpp, wImportObjC, wError, wIncompleteStruct, wByCopy, wByRef,
     wInheritable, wGensym, wInject, wRequiresInit, wUnchecked, wUnion, wPacked,
-    wBorrow, wGcSafe, wExportNims, wPartial}
+    wBorrow, wGcSafe, wExportNims, wPartial, wExplain}
   fieldPragmas* = {wImportc, wExportc, wDeprecated, wExtern,
     wImportCpp, wImportObjC, wError, wGuard, wBitsize}
   varPragmas* = {wImportc, wExportc, wVolatile, wRegister, wThreadVar, wNodecl,
@@ -73,7 +73,7 @@ const
 proc pragma*(c: PContext, sym: PSym, n: PNode, validPragmas: TSpecialWords)
 # implementation
 
-proc invalidPragma(n: PNode) =
+proc invalidPragma*(n: PNode) =
   localError(n.info, errInvalidPragmaX, renderTree(n, {renderNoComments}))
 
 proc pragmaAsm*(c: PContext, n: PNode): char =
@@ -736,6 +736,8 @@ proc singlePragma(c: PContext, sym: PSym, n: PNode, i: int,
       of wProcVar:
         noVal(it)
         incl(sym.flags, sfProcvar)
+      of wExplain:
+        sym.flags.incl sfExplain
       of wDeprecated:
         if it.kind == nkExprColonExpr: deprecatedStmt(c, it)
         elif sym != nil: incl(sym.flags, sfDeprecated)

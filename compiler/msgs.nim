@@ -495,7 +495,6 @@ type
   TErrorOutput* = enum
     eStdOut
     eStdErr
-    eInMemory
 
   TErrorOutputs* = set[TErrorOutput]
 
@@ -634,6 +633,15 @@ var
 
   errorOutputs* = {eStdOut, eStdErr}
   writelnHook*: proc (output: string) {.closure.}
+
+proc concat(strings: openarray[string]): string =
+  var totalLen = 0
+  for s in strings: totalLen += s.len
+  result = newStringOfCap totalLen
+  for s in strings: result.add s
+
+template writeBufferedMsg(args: varargs[string, `$`]) =
+  bufferedMsgs.safeAdd concat(args)
 
 proc suggestWriteln*(s: string) =
   if eStdOut in errorOutputs:
@@ -782,10 +790,7 @@ macro callStyledWriteLineStderr(args: varargs[typed]): untyped =
     result.add(arg)
 
 template callWritelnHook(args: varargs[string, `$`]) =
-  var s = ""
-  for arg in args:
-    s.add arg
-  writelnHook s
+  writelnHook concat(args)
 
 template styledMsgWriteln*(args: varargs[typed]) =
   if not isNil(writelnHook):

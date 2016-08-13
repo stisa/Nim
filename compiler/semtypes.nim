@@ -752,6 +752,7 @@ proc liftParamType(c: PContext, procKind: TSymKind, genericParams: PNode,
     let owner = if typeClass.sym != nil: typeClass.sym
                 else: getCurrOwner()
     var s = newSym(skType, finalTypId, owner, info)
+    if sfExplain in owner.flags: s.flags.incl sfExplain
     if typId == nil: s.flags.incl(sfAnon)
     s.linkTo(typeClass)
     typeClass.flags.incl tfImplicitTypeParam
