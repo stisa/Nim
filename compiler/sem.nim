@@ -206,7 +206,6 @@ proc paramsTypeCheck(c: PContext, typ: PType) {.inline.} =
 proc expectMacroOrTemplateCall(c: PContext, n: PNode): PSym
 proc semDirectOp(c: PContext, n: PNode, flags: TExprFlags): PNode
 proc semWhen(c: PContext, n: PNode, semCheck: bool = true): PNode
-proc isOpImpl(c: PContext, n: PNode): PNode
 proc semTemplateExpr(c: PContext, n: PNode, s: PSym,
                      flags: TExprFlags = {}): PNode
 proc semMacroExpr(c: PContext, n, nOrig: PNode, sym: PSym,
@@ -221,21 +220,6 @@ proc symFromType(t: PType, info: TLineInfo): PSym =
 proc symNodeFromType(c: PContext, t: PType, info: TLineInfo): PNode =
   result = newSymNode(symFromType(t, info), info)
   result.typ = makeTypeDesc(c, t)
-
-when false:
-  proc createEvalContext(c: PContext, mode: TEvalMode): PEvalContext =
-    result = newEvalContext(c.module, mode)
-    result.getType = proc (n: PNode): PNode =
-      result = tryExpr(c, n)
-      if result == nil:
-        result = newSymNode(errorSym(c, n))
-      elif result.typ == nil:
-        result = newSymNode(getSysSym"void")
-      else:
-        result.typ = makeTypeDesc(c, result.typ)
-
-    result.handleIsOperator = proc (n: PNode): PNode =
-      result = isOpImpl(c, n)
 
 proc fixupTypeAfterEval(c: PContext, evaluated, eOrig: PNode): PNode =
   # recompute the types as 'eval' isn't guaranteed to construct types nor
