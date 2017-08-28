@@ -1,23 +1,22 @@
 import macros
 
 type 
-  Promise {.importc.} [T]= object of RootObj
-  Future*[T] = ref Promise[T]
+  Promise {.importc.} [T] = object of RootObj
+  Future* [T] = ref Promise[T]
   FutureError* = object of Exception
 
-proc newFuture*[T](executor:proc(resolve:proc(val:T), reject:proc(reason:auto))): Future[T] {.importcpp: "new Promise(#)".}
-proc newFuture*(executor:proc(resolve:proc(), reject:proc(reason:auto))): Future[void] {.importcpp: "new Promise(#)".}
-proc newFuture*[T](): Future[T] {.importcpp: "new Promise(resolve => {})".}
+proc newFuture*[T](executor: proc(resolve: proc(val: T), reject: proc(reason: auto))): Future[T] {.importcpp: "new Promise(#)".}
+proc newFuture*(executor: proc(resolve: proc(), reject: proc(reason: auto))): Future[void] {.importcpp: "new Promise(#)".}
 
-proc resolve*[T](val:T):Future[T] {.importcpp: "Promise.resolve(#)",discardable.}
-proc reject*[T](reason:T):Future[T] {.importcpp: "Promise.reject(#)",discardable.}
-proc race*[T](iterable:openarray[T]):Future[T] {.importcpp: "Promise.race(#)",discardable.}
-proc all*[T](iterable:openarray[Future[T]]):Future[seq[T]] {.importcpp: "Promise.all(#)",discardable.}
+proc resolve*[T](val: T): Future[T] {.importcpp: "Promise.resolve(#)",discardable.}
+proc reject*[T](reason: T): Future[T] {.importcpp: "Promise.reject(#)",discardable.}
+proc race*[T](iterable: openarray[T]): Future[T] {.importcpp: "Promise.race(#)",discardable.}
+proc all*[T](iterable: openarray[Future[T]]): Future[seq[T]] {.importcpp: "Promise.all(#)",discardable.}
 
 {.push importcpp, discardable.}
-proc then*[T](p:Future[T], onFulfilled: proc(val:T)):auto
-proc then*[T](p:Future[T], onFulfilled: proc(val:T), onRejected: proc(reason:auto)):auto
-proc catch*[T](p:Future[T], onRejected: proc(reason:auto)):auto
+proc then*[T](p: Future[T], onFulfilled: proc(val: T)):auto
+proc then*[T](p: Future[T], onFulfilled: proc(val: T), onRejected: proc(reason: auto)): auto
+proc catch*[T](p: Future[T], onRejected: proc(reason: auto)): auto
 {.pop.}
 
 macro async*(prc: untyped): untyped =
@@ -30,24 +29,22 @@ proc await*[T](whatever: Future[T]): T {.importcpp: "await #", discardable.}
 proc complete*[T](future: var Future[T], val: T) = 
   future = resolve(val)
 
-proc setTimeout(cb:proc, ms:int){.importc.}
+proc setTimeout(cb: proc, ms: int){.importc.}
 
-proc sleepAsync*(ms:int): Future[void] {.discardable.}=
+proc sleepAsync*(ms: int): Future[void] {.discardable.}=
   newFuture(
-    proc(resolve:proc(), reject:proc(reason:string)) =
+    proc(resolve: proc(), reject: proc(reason: string)) =
       setTimeout(resolve, ms)
   )
 
-proc sleep*(ms:int) {.async.} = await sleepAsync(ms)
-
 proc asyncCheck*[T](future: Future[T]) =
-  future.catch(proc (reason:string) =
+  future.catch(proc (reason: string) =
     var err = newException(FutureError, reason)
     raise err
   )
 
-proc `$`*[T](p:Future[T]):string =
+proc `$`*[T](p: Future[T]): string =
   result = ""
-  p.then(proc(val:T) =
+  p.then(proc(val: T) =
     result = $val
   )
