@@ -22,10 +22,10 @@ const
   procPragmas* = {FirstCallConv..LastCallConv, wImportc, wExportc, wNodecl,
     wMagic, wNosideeffect, wSideeffect, wNoreturn, wDynlib, wHeader,
     wCompilerproc, wProcVar, wDeprecated, wVarargs, wCompileTime, wMerge,
-    wBorrow, wExtern, wImportCompilerProc, wThread, wImportCpp, wImportObjC,
-    wAsmNoStackFrame, wError, wDiscardable, wNoInit, wDestructor, wCodegenDecl,
-    wGensym, wInject, wRaises, wTags, wLocks, wDelegator, wGcSafe,
-    wOverride, wConstructor, wExportNims, wUsed}
+    wBorrow, wExtern, wImportCompilerProc, wThread, wImportCpp, wImportObjC, 
+    wJsAsync, wAsmNoStackFrame, wError, wDiscardable, wNoInit, wDestructor, 
+    wCodegenDecl, wGensym, wInject, wRaises, wTags, wLocks, wDelegator, 
+    wGcSafe, wOverride, wConstructor, wExportNims, wUsed}
   converterPragmas* = procPragmas
   methodPragmas* = procPragmas+{wBase}-{wImportCpp}
   templatePragmas* = {wImmediate, wDeprecated, wError, wGensym, wInject, wDirty,
@@ -974,6 +974,8 @@ proc singlePragma(c: PContext, sym: PSym, n: PNode, i: int,
         noVal(it)
         if sym == nil: invalidPragma(it)
         else: sym.flags.incl sfUsed
+      of wJsAsync:
+        incl(sym.flags, sfJsAsync)
       else: invalidPragma(it)
     else: invalidPragma(it)
 

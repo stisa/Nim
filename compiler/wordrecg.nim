@@ -40,7 +40,7 @@ type
     wDestroy,
 
     wImmediate, wConstructor, wDestructor, wDelegator, wOverride,
-    wImportCpp, wImportObjC,
+    wImportCpp, wImportObjC, wJsAsync,
     wImportCompilerProc,
     wImportc, wExportc, wExportNims, wIncompleteStruct, wRequiresInit,
     wAlign, wNodecl, wPure, wSideeffect, wHeader,
@@ -126,7 +126,7 @@ const
     "destroy",
 
     "immediate", "constructor", "destructor", "delegator", "override",
-    "importcpp", "importobjc",
+    "importcpp", "importobjc", "jsasync",
     "importcompilerproc", "importc", "exportc", "exportnims",
     "incompletestruct",
     "requiresinit", "align", "nodecl", "pure", "sideeffect",

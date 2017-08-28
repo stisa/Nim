@@ -2161,8 +2161,9 @@ proc genProc(oldProc: PProc, prc: PSym): Rope =
       returnStmt = "return $#;$n" % [a.res]
 
   p.nested: genStmt(p, prc.getBody)
-  let def = "function $#($#) {$n$#$#$#$#$#" %
-            [name, header,
+  let asyncTag = if sfJsAsync in prc.flags: "async " else: ""
+  let def = "$#function $#($#) {$n$#$#$#$#$#" %
+            [rope(asyncTag), name, header,
               optionaLine(p.globals),
               optionaLine(p.locals),
               optionaLine(resultAsgn),
