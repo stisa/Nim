@@ -16,7 +16,7 @@ import
   llstream, strutils, ast, astalgo, lexer, syntaxes, renderer, options, msgs,
   os, condsyms, times,
   wordrecg, sem, semdata, idents, passes, docgen, extccomp,
-  cgen, jsgen, json, nversion,
+  cgen, jsgen, json, nversion, wasmgen,
   platform, nimconf, importer, passaux, depends, vm, vmdef, types, idgen,
   docgen2, parser, modules, ccgutils, sigmatch, ropes,
   modulegraphs, tables, rod, lineinfos
@@ -142,6 +142,18 @@ proc commandScan(cache: IdentCache, config: ConfigRef) =
   else:
     rawMessage(config, errGenerated, "cannot open file: " & f)
 
+proc commandCompileToWasm(graph:ModuleGraph, cache: IdentCache) = 
+  setTarget(osJS, cpuJS)
+  defineSymbol("nimrod")
+  defineSymbol("wasm")
+  undefSymbol("js") # don't know why this is defined...
+  semanticPasses()
+  registerPass(WAsmGenPass)
+  # this should bypass system...
+  systemFileIdx = fileInfoIdx(options.libpath/"system"/"wasmsys.nim")
+  discard graph.compileModule(systemFileIdx, cache, {sfSystemModule})  
+  compileProject(graph, cache)
+
 const
   PrintRopeCacheStats = false
 
@@ -176,8 +188,11 @@ proc mainCommand*(graph: ModuleGraph) =
     else:
       rawMessage(conf, errGenerated, "'run' command not available; rebuild with -d:tinyc")
   of "js", "compiletojs":
-    conf.cmd = cmdCompileToJS
-    commandCompileToJS(graph)
+    gCmd = cmdCompileToJS
+    commandCompileToJS(graph, cache)
+  of "wasm":
+    gCmd = cmdCompileToWasm
+    commandCompileToWasm(graph,cache)
   of "doc0":
     wantMainModule(conf)
     conf.cmd = cmdDoc
