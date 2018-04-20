@@ -37,7 +37,7 @@ type                          # please make sure we have under 32 options
                               # evaluation
     optPatterns,              # en/disable pattern matching
     optMemTracker,
-    optHotCodeReloading
+    optHotCodeReloading    
 
   TOptions* = set[TOption]
   TGlobalOption* = enum       # **keep binary compatible**
@@ -92,7 +92,8 @@ type
     cmdRst2tex,               # convert a reStructuredText file to TeX
     cmdInteractive,           # start interactive session
     cmdRun,                   # run the project via TCC backend
-    cmdJsonScript             # compile a .json build file
+    cmdJsonScript,            # compile a .json build file
+    cmdCompileToWasm          # compile to WebAssembly
   TStringSeq* = seq[string]
   TGCMode* = enum             # the selected GC
     gcNone, gcBoehm, gcGo, gcRegions, gcMarkAndSweep, gcRefc,
