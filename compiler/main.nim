@@ -154,6 +154,18 @@ proc commandCompileToWasm(graph:ModuleGraph, cache: IdentCache) =
   discard graph.compileModule(systemFileIdx, cache, {sfSystemModule})  
   compileProject(graph, cache)
 
+proc commandCompileToWasm(graph:ModuleGraph, cache: IdentCache) = 
+  setTarget(osJS, cpuJS)
+  defineSymbol("nimrod")
+  defineSymbol("wasm")
+  undefSymbol("js") # don't know why this is defined...
+  semanticPasses()
+  registerPass(WAsmGenPass)
+  # this should bypass system...
+  systemFileIdx = fileInfoIdx(options.libpath/"system"/"wasmsys.nim")
+  discard graph.compileModule(systemFileIdx, cache, {sfSystemModule})  
+  compileProject(graph, cache)
+
 const
   PrintRopeCacheStats = false
 
