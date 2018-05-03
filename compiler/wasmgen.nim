@@ -8,7 +8,7 @@ from math import ceil,log2
 
 from modulegraphs import ModuleGraph
 
-include "wasm/wasmglue.templ" # TODO: check out how nimdoc does overloading of template
+# TODO: more flexibility in glue, maybe save it as config in context
 
 type
   WasmGen = ref object of TPassContext
@@ -917,11 +917,11 @@ proc linkPass(mainModuleFile:string, w:WasmGen) =
   #TODO: allow user defined glue
   if optRun in gGlobalOptions:
     # generate a js file suitable to be run by node
-    writeFile(mainModuleFile.changeFileExt("js"), generateNodeLoader(w.s.name.s))
+    writeFile(mainModuleFile.changeFileExt("js"), getConfigVar("glue.loaderNode") % [w.s.name.s, getConfigVar("glue.jsHelpers") % [w.s.name.s]])
     # TODO: removeme
-    writefile(mainModuleFile.changeFileExt("html"), generateLoader(w.s.name.s))
+    writefile(mainModuleFile.changeFileExt("html"), getConfigVar("glue.loader") % [w.s.name.s, getConfigVar("glue.jsHelpers") % [w.s.name.s]])
   else:
-    writefile(mainModuleFile.changeFileExt("html"), generateLoader(w.s.name.s))
+    writefile(mainModuleFile.changeFileExt("html"), getConfigVar("glue.loader") % [w.s.name.s, getConfigVar("glue.jsHelpers") % [w.s.name.s]])
 
 #------------------myPass------------------------------#
 proc myProcess(b: PPassContext, n: PNode): PNode =

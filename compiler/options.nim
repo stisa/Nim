@@ -192,6 +192,7 @@ const
   DefaultConfig* = "nim.cfg"
   DocConfig* = "nimdoc.cfg"
   DocTexConfig* = "nimdoc.tex.cfg"
+  WasmGlue* ="nimwasm.cfg"
 
 # additional configuration variables:
 var
