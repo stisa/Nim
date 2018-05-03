@@ -389,6 +389,7 @@ const
   DefaultConfig* = "nim.cfg"
   DocConfig* = "nimdoc.cfg"
   DocTexConfig* = "nimdoc.tex.cfg"
+  WasmGlue* ="nimwasm.cfg"
 
 const oKeepVariableNames* = true
 

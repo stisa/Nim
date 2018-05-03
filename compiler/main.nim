@@ -204,6 +204,7 @@ proc mainCommand*(graph: ModuleGraph) =
     commandCompileToJS(graph, cache)
   of "wasm":
     gCmd = cmdCompileToWasm
+    loadConfigs(WasmGlue, cache)
     commandCompileToWasm(graph,cache)
   of "doc0":
     wantMainModule(conf)
