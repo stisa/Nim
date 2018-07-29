@@ -390,6 +390,28 @@ const
   DocConfig* = "nimdoc.cfg"
   DocTexConfig* = "nimdoc.tex.cfg"
   WasmGlue* ="nimwasm.cfg"
+<<<<<<< HEAD
+=======
+
+# additional configuration variables:
+var
+  gConfigVars* = newStringTable(modeStyleInsensitive)
+  gDllOverrides = newStringTable(modeCaseInsensitive)
+  gModuleOverrides* = newStringTable(modeStyleInsensitive)
+  gPrefixDir* = "" # Overrides the default prefix dir in getPrefixDir proc.
+  libpath* = ""
+  gProjectName* = "" # holds a name like 'nim'
+  gProjectPath* = "" # holds a path like /home/alice/projects/nim/compiler/
+  gProjectFull* = "" # projectPath/projectName
+  gProjectIsStdin* = false # whether we're compiling from stdin
+  gProjectMainIdx*: int32 # the canonical path id of the main module
+  nimcacheDir* = ""
+  command* = "" # the main command (e.g. cc, check, scan, etc)
+  commandArgs*: seq[string] = @[] # any arguments after the main command
+  gKeepComments*: bool = true # whether the parser needs to keep comments
+  implicitImports*: seq[string] = @[] # modules that are to be implicitly imported
+  implicitIncludes*: seq[string] = @[] # modules that are to be implicitly included
+>>>>>>> d546b4d2e2e85c9cdf7258c2f24264236accbca3
 
 const oKeepVariableNames* = true
 

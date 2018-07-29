@@ -15,7 +15,11 @@ proc toBytes*(val:SomeNumber):seq[byte] =
   # Maybe something less unsafe might be a good idea
   result = newSeq[byte](sizeof(val))
   copymem(
+<<<<<<< HEAD
       (pointer)(addr result[0]), 
+=======
+      (pointer)addr result[0], 
+>>>>>>> d546b4d2e2e85c9cdf7258c2f24264236accbca3
       (pointer)unsafeaddr(val),
       sizeof(val)
   )
@@ -24,7 +28,11 @@ proc toBytes*(s: string): seq[byte] =
   assert(not s.isNil)
   result = newSeq[byte](s.len)
   copymem(
+<<<<<<< HEAD
     (pointer)(addr result[0]), 
+=======
+    (pointer)addr result[0], 
+>>>>>>> d546b4d2e2e85c9cdf7258c2f24264236accbca3
     (pointer)unsafeaddr(s[0]),
     s.len
   )
@@ -504,7 +512,11 @@ proc writeTo*(m: seq[byte], name:string) =
   assert(not m.isNil)
   var res = newString(m.len)
   copymem(
+<<<<<<< HEAD
     (pointer)(addr res[0]), 
+=======
+    (pointer)addr res[0], 
+>>>>>>> d546b4d2e2e85c9cdf7258c2f24264236accbca3
     (pointer)unsafeaddr(m[0]),
     m.len
   )

@@ -140,6 +140,7 @@ proc commandScan(cache: IdentCache, config: ConfigRef) =
       if tok.tokType == tkEof: break
     closeLexer(L)
   else:
+<<<<<<< HEAD
     rawMessage(config, errGenerated, "cannot open file: " & f)
 
 proc commandCompileToWasm(graph:ModuleGraph) = 
@@ -154,6 +155,22 @@ proc commandCompileToWasm(graph:ModuleGraph) =
   discard graph.compileModule(graph.config.m.systemFileIdx, {sfSystemModule})  
   compileProject(graph)
   
+=======
+    rawMessage(errCannotOpenFile, f)
+
+proc commandCompileToWasm(graph:ModuleGraph, cache: IdentCache) = 
+  setTarget(osJS, cpuJS)
+  defineSymbol("nimrod")
+  defineSymbol("wasm")
+  undefSymbol("js") # don't know why this is defined...
+  semanticPasses()
+  registerPass(WAsmGenPass)
+  # this should bypass system...
+  systemFileIdx = fileInfoIdx(options.libpath/"system"/"wasmsys.nim")
+  discard graph.compileModule(systemFileIdx, cache, {sfSystemModule})  
+  compileProject(graph, cache)
+
+>>>>>>> d546b4d2e2e85c9cdf7258c2f24264236accbca3
 const
   PrintRopeCacheStats = false
 
@@ -188,12 +205,21 @@ proc mainCommand*(graph: ModuleGraph) =
     else:
       rawMessage(conf, errGenerated, "'run' command not available; rebuild with -d:tinyc")
   of "js", "compiletojs":
+<<<<<<< HEAD
     conf.cmd = cmdCompileToJS
     commandCompileToJS(graph)
   of "wasm":
     conf.cmd = cmdCompileToWasm
     loadConfigs(WasmGlue, cache)
     commandCompileToWasm(graph)
+=======
+    gCmd = cmdCompileToJS
+    commandCompileToJS(graph, cache)
+  of "wasm":
+    gCmd = cmdCompileToWasm
+    loadConfigs(WasmGlue, cache)
+    commandCompileToWasm(graph,cache)
+>>>>>>> d546b4d2e2e85c9cdf7258c2f24264236accbca3
   of "doc0":
     wantMainModule(conf)
     conf.cmd = cmdDoc
