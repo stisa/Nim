@@ -99,10 +99,10 @@ proc handleCmdLine(cache: IdentCache; conf: ConfigRef) =
     #echo(GC_getStatistics())
     if conf.errorCounter == 0:
       when hasTinyCBackend:
-        if gCmd == cmdRun:
-          tccgen.run(commands.arguments)
-      if optRun in gGlobalOptions:
-        if gCmd == cmdCompileToJS or gCmd == cmdCompileToWasm:
+        if conf.cmd == cmdRun:
+          tccgen.run(conf.arguments)
+      if optRun in conf.globalOptions:
+        if conf.cmd == cmdCompileToJS or conf.cmd == cmdCompileToWasm:
           var ex: string
           if conf.outFile.len > 0:
             ex = conf.outFile.prependCurDir.quoteShell

@@ -142,30 +142,18 @@ proc commandScan(cache: IdentCache, config: ConfigRef) =
   else:
     rawMessage(config, errGenerated, "cannot open file: " & f)
 
-proc commandCompileToWasm(graph:ModuleGraph, cache: IdentCache) = 
-  setTarget(osJS, cpuJS)
-  defineSymbol("nimrod")
-  defineSymbol("wasm")
-  undefSymbol("js") # don't know why this is defined...
-  semanticPasses()
-  registerPass(WAsmGenPass)
+proc commandCompileToWasm(graph:ModuleGraph) = 
+  setTarget(graph.config.target, osJS, cpuJS)
+  defineSymbol(graph.config.symbols,"nimrod")
+  defineSymbol(graph.config.symbols,"wasm")
+  undefSymbol(graph.config.symbols,"js") # don't know why this is defined...
+  semanticPasses(graph)
+  registerPass(graph, WAsmGenPass)
   # this should bypass system...
-  systemFileIdx = fileInfoIdx(options.libpath/"system"/"wasmsys.nim")
-  discard graph.compileModule(systemFileIdx, cache, {sfSystemModule})  
-  compileProject(graph, cache)
-
-proc commandCompileToWasm(graph:ModuleGraph, cache: IdentCache) = 
-  setTarget(osJS, cpuJS)
-  defineSymbol("nimrod")
-  defineSymbol("wasm")
-  undefSymbol("js") # don't know why this is defined...
-  semanticPasses()
-  registerPass(WAsmGenPass)
-  # this should bypass system...
-  systemFileIdx = fileInfoIdx(options.libpath/"system"/"wasmsys.nim")
-  discard graph.compileModule(systemFileIdx, cache, {sfSystemModule})  
-  compileProject(graph, cache)
-
+  graph.config.m.systemFileIdx = fileInfoIdx(graph.config, graph.config.libpath/"system"/"wasmsys.nim")
+  discard graph.compileModule(graph.config.m.systemFileIdx, {sfSystemModule})  
+  compileProject(graph)
+  
 const
   PrintRopeCacheStats = false
 
@@ -200,12 +188,12 @@ proc mainCommand*(graph: ModuleGraph) =
     else:
       rawMessage(conf, errGenerated, "'run' command not available; rebuild with -d:tinyc")
   of "js", "compiletojs":
-    gCmd = cmdCompileToJS
-    commandCompileToJS(graph, cache)
+    conf.cmd = cmdCompileToJS
+    commandCompileToJS(graph)
   of "wasm":
-    gCmd = cmdCompileToWasm
+    conf.cmd = cmdCompileToWasm
     loadConfigs(WasmGlue, cache)
-    commandCompileToWasm(graph,cache)
+    commandCompileToWasm(graph)
   of "doc0":
     wantMainModule(conf)
     conf.cmd = cmdDoc

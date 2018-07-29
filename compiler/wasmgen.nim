@@ -969,4 +969,4 @@ proc myOpen(graph: ModuleGraph; s: PSym; cache: IdentCache): PPassContext =
   result = genCtx
   echo "# end myOpen ",s.info.fileIndex.toFilename," s.name: ",$s.name.s
 
-const WasmGenPass* = makePass(myOpen, myOpenCached, myProcess, myClose)
+const WasmGenPass* = makePass(myOpen, myProcess, myClose)
