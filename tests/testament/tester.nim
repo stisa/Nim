@@ -30,7 +30,7 @@ Arguments:
 Options:
   --print                   also print results to the console
   --failing                 only show failing/ignored tests
-  --targets:"c c++ js objc" run tests for specified targets (default: all)
+  --targets:"c c++ js objc wasm" run tests for specified targets (default: all)
   --nim:path                use a particular nim executable (default: compiler/nim)
 """ % resultsFile
 
@@ -233,7 +233,7 @@ proc generatedFile(test: TTest, target: TTarget): string =
   let (_, name, _) = test.name.splitFile
   let ext = targetToExt[target]
   result = nimcacheDir(test.name, test.options, target) /
-    (if target == targetJS: "" else: "compiler_") &
+    (if target == targetJS or target == targetWasm: "" else: "compiler_") &
     name.changeFileExt(ext)
 
 proc needsCodegenCheck(spec: TSpec): bool =
@@ -332,7 +332,7 @@ proc testSpec(r: var TResults, test: TTest, target = targetC) =
         r.addResult(test, target, "", given.msg, given.err)
         continue
 
-      let isJsTarget = target == targetJS
+      let isJsTarget = target == targetJS or target == targetWasm
       var exeFile: string
       if isJsTarget:
         let (_, file, _) = splitFile(tname)
