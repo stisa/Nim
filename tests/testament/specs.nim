@@ -44,6 +44,7 @@ type
     targetCpp = "C++"
     targetObjC = "ObjC"
     targetJS = "JS"
+    targetWasm ="WAsm"
 
   TSpec* = object
     action*: TTestAction
@@ -62,8 +63,8 @@ type
     nimout*: string
 
 const
-  targetToExt*: array[TTarget, string] = ["c", "cpp", "m", "js"]
-  targetToCmd*: array[TTarget, string] = ["c", "cpp", "objc", "js"]
+  targetToExt*: array[TTarget, string] = ["c", "cpp", "m", "js", "js"]
+  targetToCmd*: array[TTarget, string] = ["c", "cpp", "objc", "js", "wasm"]
 
 when not declared(parseCfgBool):
   # candidate for the stdlib:
@@ -122,6 +123,7 @@ proc parseTargets*(value: string): set[TTarget] =
     of "cpp", "c++": result.incl(targetCpp)
     of "objc": result.incl(targetObjC)
     of "js": result.incl(targetJS)
+    of "wasm": result.incl(targetWasm)
     else: echo "target ignored: " & v
 
 proc parseSpec*(filename: string): TSpec =
@@ -198,5 +200,6 @@ proc parseSpec*(filename: string): TSpec =
         of "cpp", "c++": result.targets.incl(targetCpp)
         of "objc": result.targets.incl(targetObjC)
         of "js": result.targets.incl(targetJS)
+        of "wasm": result.targets.incl(targetWasm)
         else: echo ignoreMsg(p, e)
     else: echo ignoreMsg(p, e)
