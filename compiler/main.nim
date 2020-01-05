@@ -168,14 +168,21 @@ proc commandScan(cache: IdentCache, config: ConfigRef) =
   else:
     rawMessage(config, errGenerated, "cannot open file: " & f.string)
 
-proc commandCompileToWasm(graph:ModuleGraph) = 
+proc commandCompileToWasm(graph:ModuleGraph) =
+  let c = graph.config
+  c.exc = excCpp # TODO: find out differences
+  if c.outDir.isEmpty:
+    c.outDir = c.projectPath
+  if c.outFile.isEmpty:
+    c.outFile = RelativeFile(c.projectName & ".wasm")  
+
   setTarget(graph.config.target, osJS, cpuJS)
-  defineSymbol(graph.config.symbols,"nimrod")
   defineSymbol(graph.config.symbols,"wasm")
   undefSymbol(graph.config.symbols,"js") # don't know why this is defined...
   semanticPasses(graph)
   registerPass(graph, WasmGenPass)
   # this should bypass system...
+  connectCallbacks(graph)
   graph.config.m.systemFileIdx = fileInfoIdx(graph.config, graph.config.libpath / RelativeDir"system" / RelativeFile"wasmsys.nim")
   discard graph.compileModule(graph.config.m.systemFileIdx, {sfSystemModule})  
   compileProject(graph)
