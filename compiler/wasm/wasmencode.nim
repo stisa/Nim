@@ -379,7 +379,7 @@ proc encode(data: seq[WAsmData]): tuple[num: int, d: seq[byte]] =
     # header
     result.d.add(0'i32.unsignedLEB128) # memory in which to store data
     result.d.add(0x41.byte) # i32.const
-    result.d.add(d.index.int32.signedLeb128) # i32.literal `d.id`
+    result.d.add(d.index.int32.signedLEB128) # i32.literal `d.id`
     result.d.add(0x0b.byte) # end
     result.d.add(d.payload.len.int32.unsignedLEB128) # segment length
     # segment
@@ -401,13 +401,10 @@ proc encode(f: WAsmFunction): tuple[t:seq[byte],f:seq[byte]] =
   # functions (code) part
   var temp = newSeq[byte]()
   # local variable declarations
-  if f.locals.len==0: # TODO: proper fix for isNil
-    temp.add(0'i32.unsignedLEB128)
-  else:
-    temp.add(f.locals.len.int32.unsignedLEB128)
-    for local in f.locals:
-      temp.add(1'i32.unsignedLEB128)
-      temp.add(encode(local))
+  temp.add(f.locals.len.int32.unsignedLEB128)
+  for local in f.locals:
+    temp.add(1'i32.unsignedLEB128)
+    temp.add(encode(local))
   
   temp.add(encode(f.body)) # actual code in the function
   temp.add(0x0b.byte) # end marker

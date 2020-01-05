@@ -1,7 +1,7 @@
 import
-  ast, astalgo, options, msgs, magicsys, idents, types, passes, rodread,
-  ropes, wordrecg,extccomp,
-  ospaths, tables, os, strutils,
+  ast, astalgo, options, msgs, idents, types, passes,
+  ropes,
+  ospaths, tables, os, strutils, pathutils,
   wasm/[wasmast, wasmstructure, wasmencode, wasmnode, wasmleb128, wasmrender], wasmutils
 
 from math import ceil,log2
@@ -141,7 +141,7 @@ proc store(w: WasmGen, typ: PType, n: PNode,  memIndex: var int): WasmNode =
       let gn = w.store(t, colonexpr[1], tmpMemIdx)
       if not gn.isNil: result.sons.add(gn)
   of nkNilLit:
-    dataseg.setLen(n.typ.getSize.alignTo4)
+    dataseg.setLen(w.config.getSize(n.typ).alignTo4)
   of nkBracket:
     for val in n:
       let gn = w.store(val.typ, val, memIndex)
@@ -163,24 +163,24 @@ proc store(w: WasmGen, typ: PType, n: PNode,  memIndex: var int): WasmNode =
   of nkSym:
     result = # FIXME: does this work for every symbol?
       newStore(
-        n.typ.mapStoreKind,
+        w.config.mapStoreKind(n.typ),
         w.gen(n),
         0'i32, newConst(memIndex)
       )
   of nkCallKinds:
     # echo treeToYaml n, n.typ.getSize.alignTo4
-    dataseg.setLen(n.typ.getSize.alignTo4)    
+    dataseg.setLen(w.config.getSize(n.typ).alignTo4)    
     result = # TODO: mmh
       newStore(
-        n.typ.mapStoreKind,
+        w.config.mapStoreKind(n.typ),
         w.gen(n),
         0'i32, newConst(memIndex)
       )
   of nkExprColonExpr:
-    internalError("TODO: genIdentDefs: initialize " & $n.kind)
+    w.config.internalError("TODO: genIdentDefs: initialize " & $n.kind)
   else:
-    internalError("genIdentDefs: unhandled identdef kind: " & $n.kind)
-  if not dataseg.isNil and dataseg.len > 0:
+    w.config.internalError("genIdentDefs: unhandled identdef kind: " & $n.kind)
+  if dataseg.len > 0: # TODO: proper fix for isNil changes
     w.m.data.add(newData(memIndex, dataseg))
     memIndex = ( memIndex + dataseg.len ).alignTo4
   else:
@@ -204,11 +204,11 @@ proc genBody(w: WasmGen,
   if n.kind == nkStmtList:
     for st in n:
       echo "# genBody ", $st.kind
-      echo treetoyaml st
+      echo w.config.treeToYaml(st)
       explicitRet = st.kind == nkReturnStmt
       let gs = w.gen(st)
       if not gs.isNil: result.sons.add(gs)
-  elif n.kind == nkReturnStmt and n[0].typ.kind == tyStmt: 
+  elif n.kind == nkReturnStmt and n[0].typ.kind == tyTyped: 
     # The child of the result stmt doesn't return anything in wasm terms.
     # So we generate the child and force the return of result.
     # eg nkReturn[nkAsgn], for wasm nkAsgn doesn't generate a return,
@@ -306,7 +306,7 @@ proc genProc(w: WasmGen, s: PSym) =
   else:
     internalError("# genProc generating unused proc " & s.name.s)
 
-proc getMagicOp(m: TMagic): WasmOpKind =
+proc getMagicOp(c: ConfigRef, m: TMagic): WasmOpKind =
   result = case m:
   of mAddI, mAddU, mSucc: ibAdd32
   of mSubI, mSubU, mPred: ibSub32
@@ -337,9 +337,9 @@ proc getMagicOp(m: TMagic): WasmOpKind =
   of mDivF64: fbDiv64
   else: woNop
   if result == woNop:
-    internalError("unmapped magic: " & $m)
+    c.internalError("unmapped magic: " & $m)
 
-proc getFloat32Magic(m:TMagic):WasmOpKind =
+proc getFloat32Magic(c: ConfigRef, m:TMagic):WasmOpKind =
   result = case m:
   of mEqF64: frEq32
   of mLeF64: frLe32
@@ -349,7 +349,7 @@ proc getFloat32Magic(m:TMagic):WasmOpKind =
   of mMulF64: fbMul32
   of mDivF64: fbDiv32
   else: woNop
-  if result == woNop: internalError("unmapped magic2: " & $m) 
+  if result == woNop: c.internalError("unmapped magic2: " & $m) 
 
 const UnaryMagic = {mNot}    
 const BinaryMagic = {mAddI,mAddU,mSubI,mSubU,mMulI,mMulU,mDivI,mDivU,mSucc,mPred,
@@ -364,16 +364,16 @@ proc callMagic(w: WasmGen, s: PSym, n: PNode): WasmNode =
   #echo $s.magic, treeToYaml n
   case s.magic:
   of UnaryMagic:
-    return newUnaryOp(getMagicOp(s.magic), w.gen(n[1]))
+    return newUnaryOp(w.config.getMagicOp(s.magic), w.gen(n[1]))
   of BinaryMagic:
-    return newBinaryOp(getMagicOp(s.magic), w.gen(n[1]), w.gen(n[2]))
+    return newBinaryOp(w.config.getMagicOp(s.magic), w.gen(n[1]), w.gen(n[2]))
   of FloatsMagic:
     if n.typ.kind == tyFloat32 or 
       (n.typ.kind == tyBool and n[1].typ.kind == tyFloat32): 
       # the bool part is because otherwise 1'f32+2.0 would use f32 arithm
-      return newBinaryOp(getFloat32Magic(s.magic), w.gen(n[1]), w.gen(n[2]))
+      return newBinaryOp(w.config.getFloat32Magic(s.magic), w.gen(n[1]), w.gen(n[2]))
     else:
-      return newBinaryOp(getMagicOp(s.magic), w.gen(n[1]), w.gen(n[2]))
+      return newBinaryOp(w.config.getMagicOp(s.magic), w.gen(n[1]), w.gen(n[2]))
   of mBitnotI:
     return newBinaryOp(ibXor32, w.gen(n[1]), newConst(-1.int32))
   of mNew:
@@ -383,7 +383,7 @@ proc callMagic(w: WasmGen, s: PSym, n: PNode): WasmNode =
     # new gets passed a ref, so local 0 is the location of the ref to the
     # object to initialize.
     #echo treeToYaml n[1]
-    let size = n[1].typ.lastSon.getSize.alignTo4
+    let size = w.config.getSize(n[1].typ.lastSon).alignTo4
     var magicbody = newOpList()
     magicbody.sons.add([
       # heap ptr points to next free byte in memory. Use it to
@@ -404,7 +404,7 @@ proc callMagic(w: WasmGen, s: PSym, n: PNode): WasmNode =
     
     w.m.functions.add(
       newFunction(
-        w.nextFuncIdx, newType(vtNone, vtI32), magicbody, nil, s.mangleName,
+        w.nextFuncIdx, newType(vtNone, vtI32), magicbody, @[], s.mangleName,
         s.flags.contains(sfExported)
       )
     )
@@ -612,7 +612,7 @@ proc genAsgn(w: WasmGen, lhsNode, rhsNode: PNode): WasmNode =
       lhsIndex = newLoad(memLoadI32, 0, 1, w.genSymLoc(lhsNode[0][0].sym))
       lhsOffset = lhsNode[1].sym.offset.int32
     else:
-      internalError("genAsgn nkDotExpr error")
+      w.config.internalError("genAsgn nkDotExpr error")
   of nkBracketExpr:
    # echo treeToYaml lhsNode
     if lhsNode[0].kind == nkSym:
@@ -623,17 +623,17 @@ proc genAsgn(w: WasmGen, lhsNode, rhsNode: PNode): WasmNode =
     elif lhsNode[0].kind in {nkHiddenDeref, nkDerefExpr}:
       lhsIndex = newLoad(memLoadI32, 0, 1, w.genSymLoc(lhsNode[0][0].sym))
     else:
-      internalError("genAsgn nkBracketExpr 0 error")
+      w.config.internalError("genAsgn nkBracketExpr 0 error")
 
     lhsIndex = newBinaryOp(
       ibAdd32, 
       lhsIndex, 
       newBinaryOp(
-        ibMul32, w.gen(lhsNode[1]), newConst(lhsNode.typ.getSize().alignTo4)
+        ibMul32, w.gen(lhsNode[1]), newConst(w.config.getSize(lhsNode.typ).alignTo4)
       )
     )
   else: 
-    internalError("# genAsgn unhandled lhs kind " & $lhsNode.kind)
+    w.config.internalError("# genAsgn unhandled lhs kind " & $lhsNode.kind)
   
   case lhsNode.typ.kind:
   of tyInt,tyBool,tyInt32, tyEnum, tyChar:
@@ -649,12 +649,12 @@ proc genAsgn(w: WasmGen, lhsNode, rhsNode: PNode): WasmNode =
     elif lhsNode.typ.size == 8:
       storeKind = memStoreF64
     else:
-      internalError("impossible float size" & $lhsNode.typ.size)
+      w.config.internalError("impossible float size" & $lhsNode.typ.size)
     result = newStore(storeKind, w.gen(rhsNode), lhsOffset, lhsIndex)
   of tyString:
     result = newStore(memStoreI32, w.gen(rhsNode), lhsOffset, lhsIndex) #w.gen(lhsNode))
   else:  
-    internalError("# genAsgn missing case: " & $lhsNode.typ.kind)
+    w.config.internalError("# genAsgn missing case: " & $lhsNode.typ.kind)
 
 proc accessLocAux(w: WasmGen, n: PNode): WasmNode =
   case n.kind
@@ -681,9 +681,9 @@ proc accessLocAux(w: WasmGen, n: PNode): WasmNode =
         newConst(n[1].sym.offset.int32)
       )
     else:
-      internalError("accessLocAux nkDotExpr error")
+      w.config.internalError("accessLocAux nkDotExpr error")
   else: 
-    internalError("unhandled accessLocAux kind " & $n.kind)
+    w.config.internalError("unhandled accessLocAux kind " & $n.kind)
   
 proc genAccess(w: WasmGen, n: PNode): WasmNode =
   let 
@@ -695,18 +695,18 @@ proc genAccess(w: WasmGen, n: PNode): WasmNode =
     symIndex, 
     newBinaryOp(
       ibMul32,
-      accPos, newConst(t.getSize().alignTo4.int32)
+      accPos, newConst(w.config.getSize(t).alignTo4.int32)
     )
   )
   #if not t.isNil and not t.lastSon.isNil and t.lastSon.kind in {tySequence, tyString}:
   #  accIndex = newAdd32(accIndex, newConst(4'i32)) # due to len taking 4 bytes
-  echo "genaccess ", t.kind, " ", mapType(t)
-  case mapType(t):
+  echo "genaccess ", t.kind, " ", w.config.mapType(t)
+  case w.config.mapType(t):
   of vtI32: result = newLoad(memLoadI32, 0 , 1, accIndex)
   of vtF32: result = newLoad(memLoadF32, 0 , 1, accIndex)
   of vtF64: result = newLoad(memLoadF64, 0 , 1, accIndex)
   else:  
-    internalError("# genAccess missing case: " & $t.kind)
+    w.config.internalError("# genAccess missing case: " & $t.kind)
 
 
 proc gen(w: WasmGen, n: PNode): WasmNode =
@@ -766,7 +766,7 @@ proc gen(w: WasmGen, n: PNode): WasmNode =
       if n.sym.typ.skipTypes(abstractInst).kind in passedAsBackendPtr:
         result = w.genSymLoc(n.sym)
       else:
-        result = newLoad(mapLoadKind(n.sym.typ), 0, 1, w.genSymLoc(n.sym))
+        result = newLoad(w.config.mapLoadKind(n.sym.typ), 0, 1, w.genSymLoc(n.sym))
     # FIXME: max uint value is bound by max int value
     # becuase wasm mvp is 32bit only
   of nkBracketExpr:
@@ -790,7 +790,7 @@ proc gen(w: WasmGen, n: PNode): WasmNode =
         
         s.offset = w.nextMemIdx # initialize the position in memory of the symbol
         
-        assert(typ.kind in ConcreteTypes, $typ.kind & "\n" & $treeToYaml(iddef))
+        assert(typ.kind in ConcreteTypes, $typ.kind & "\n" & $w.config.treeToYaml(iddef))
         if s.owner.kind == skModule:
           w.initExprs.add(w.store(typ, iddef[2], w.nextMemIdx))
         elif s.owner.kind == skProc:
@@ -912,7 +912,7 @@ proc putInitFunc(w: WasmGen) =
   if w.initExprs.len<1: return # no expression, no need for a init proc
   w.m.functions.add(
     newFunction(
-      w.nextFuncIdx, newType(vtNone),  newOpList(w.initExprs), nil, "nimInit", true
+      w.nextFuncIdx, newType(vtNone),  newOpList(w.initExprs), @[], "nimInit", true
     )
   )
   echo "init: ", w.nextFuncIdx
@@ -921,27 +921,27 @@ proc putInitFunc(w: WasmGen) =
 proc linkPass(mainModuleFile:string, w:WasmGen) =
   echo "genloaders..." & mainModuleFile
   #TODO: allow user defined glue
-  if optRun in gGlobalOptions:
+  if optRun in w.config.globalOptions:
     # generate a js file suitable to be run by node
-    writeFile(mainModuleFile.changeFileExt("js"), getConfigVar("glue.loaderNode") % [w.s.name.s, getConfigVar("glue.jsHelpers") % [w.s.name.s]])
+    writeFile(mainModuleFile.changeFileExt("js"), w.config.getConfigVar("glue.loaderNode") % [w.s.name.s, w.config.getConfigVar("glue.jsHelpers") % [w.s.name.s]])
     # TODO: removeme
-    writefile(mainModuleFile.changeFileExt("html"), getConfigVar("glue.loader") % [w.s.name.s, getConfigVar("glue.jsHelpers") % [w.s.name.s]])
+    writeFile(mainModuleFile.changeFileExt("html"), w.config.getConfigVar("glue.loader") % [w.s.name.s, w.config.getConfigVar("glue.jsHelpers") % [w.s.name.s]])
   else:
-    writefile(mainModuleFile.changeFileExt("html"), getConfigVar("glue.loader") % [w.s.name.s, getConfigVar("glue.jsHelpers") % [w.s.name.s]])
+    writeFile(mainModuleFile.changeFileExt("html"), w.config.getConfigVar("glue.loader") % [w.s.name.s, w.config.getConfigVar("glue.jsHelpers") % [w.s.name.s]])
 
 #------------------myPass------------------------------#
 proc myProcess(b: PPassContext, n: PNode): PNode =
   #echo "processing ", $n.kind, " from ", n.info.fileIndex.toFilename
-  if passes.skipCodegen(n): return n
-
   var w = WasmGen(b)
+  if passes.skipCodegen(w.config, n): return n
+
   let generated = w.gen(n)
   if not generated.isNil: w.initExprs.add(generated)
   result = n
 
 proc myClose(graph: ModuleGraph; b: PPassContext, n: PNode): PNode =
-  echo "# closing ", $n.kind, " from ", n.info.fileIndex.toFilename
-  if passes.skipCodegen(n): return n
+  echo "# closing ", $n.kind, " from ", graph.config.toFilename(n.info.fileIndex)
+  if passes.skipCodegen(graph.config, n): return n
   result = myProcess(b, n)
   var w = WasmGen(b)
   #w.putInitFunc
@@ -949,30 +949,18 @@ proc myClose(graph: ModuleGraph; b: PPassContext, n: PNode): PNode =
     w.putInitFunc
     w.putHeapPtr
     let ext = "wasm"
-    let f = w.s.info.fileIndex.toFilename
-    let outfile =
-      if options.outFile.len > 0:
-        if options.outFile.isAbsolute: options.outFile
-        else: getCurrentDir() / options.outFile
-      else:
-        changeFileExt(completeCFilePath(f), ext)
-    linkPass(outfile, w)  
-    echo "out" & outfile
-    writeFile(outfile.changeFileExt("json"), render(w.m))
-    encode(w.m).writeTo(outfile)
     
-    
+    let f = w.config.prepareToWriteOutput
+    linkPass($f, w)  
+    echo "out" & $f
+    writeFile($f.changeFileExt("json"), render(w.m))
+    encode(w.m).writeTo($f)
 
-proc myOpenCached(graph: ModuleGraph; s: PSym, rd: PRodReader): PPassContext =
-  # TODO: is this even true?
-  internalError("symbol files are not possible with the WASM code generator")
-  result = nil
-
-proc myOpen(graph: ModuleGraph; s: PSymS): PPassContext =
-  echo "# begin myOpen ",s.info.fileIndex.toFilename," s.name: ",$s.name.s
+proc myOpen(graph: ModuleGraph; s: PSym): PPassContext =
+  echo "# begin myOpen ",graph.config.toFilename(s.info.fileIndex)," s.name: ",$s.name.s
   if genCtx.isNil: genCtx = newWasmGen(s, graph)
   genCtx.s = s
   result = genCtx
-  echo "# end myOpen ",s.info.fileIndex.toFilename," s.name: ",$s.name.s
+  echo "# end myOpen ",graph.config.toFilename(s.info.fileIndex)," s.name: ",$s.name.s
 
 const WasmGenPass* = makePass(myOpen, myProcess, myClose)

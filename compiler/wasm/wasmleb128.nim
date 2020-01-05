@@ -26,8 +26,7 @@ proc signedLEB128* (value:int32|uint32):seq[byte] =
         more = false
     else:
         b = b or 0x80
-    if result.isnil: result = @[b.byte]
-    else: add result, b.byte
+    add result, b.byte
 
 proc unsignedLEB128* [T:int32|uint32](value: T, padding:int=0):seq[byte] =
   var
