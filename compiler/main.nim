@@ -16,7 +16,7 @@ import
   llstream, strutils, ast, lexer, syntaxes, options, msgs,
   condsyms, times,
   sem, idents, passes, extccomp,
-  cgen, json, nversion,
+  cgen, json, nversion, wasmgen,
   platform, nimconf, passaux, depends, vm, idgen,
   modules,
   modulegraphs, tables, rod, lineinfos, pathutils
@@ -168,6 +168,18 @@ proc commandScan(cache: IdentCache, config: ConfigRef) =
   else:
     rawMessage(config, errGenerated, "cannot open file: " & f.string)
 
+proc commandCompileToWasm(graph:ModuleGraph) = 
+  setTarget(graph.config.target, osJS, cpuJS)
+  defineSymbol(graph.config.symbols,"nimrod")
+  defineSymbol(graph.config.symbols,"wasm")
+  undefSymbol(graph.config.symbols,"js") # don't know why this is defined...
+  semanticPasses(graph)
+  registerPass(graph, WAsmGenPass)
+  # this should bypass system...
+  graph.config.m.systemFileIdx = fileInfoIdx(graph.config, graph.config.libpath/"system"/"wasmsys.nim")
+  discard graph.compileModule(graph.config.m.systemFileIdx, {sfSystemModule})  
+  compileProject(graph)
+
 const
   PrintRopeCacheStats = false
 
@@ -215,6 +227,10 @@ proc mainCommand*(graph: ModuleGraph) =
         # A better solution might be to fix system.nim
         undefSymbol(conf.symbols, "useNimRtl")
       commandCompileToJS(graph)
+  of "wasm":
+    conf.cmd = cmdCompileToWasm
+    loadConfigs(WasmGlue, cache)
+    commandCompileToWasm(graph)
   of "doc0":
     when defined(leanCompiler):
       quit "compiler wasn't built with documentation generator"

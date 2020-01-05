@@ -101,7 +101,7 @@ proc handleCmdLine(cache: IdentCache; conf: ConfigRef) =
       tccgen.run(conf.arguments)
   if optRun in conf.globalOptions:
     var ex = quoteShell conf.absOutFile
-    if conf.cmd == cmdCompileToJS:
+    if conf.cmd == cmdCompileToJS or conf.cmd == cmdCompileToWasm:
       execExternalProgram(conf, findNodeJs() & " " & ex & ' ' & conf.arguments)
     else:
       execExternalProgram(conf, ex & ' ' & conf.arguments)

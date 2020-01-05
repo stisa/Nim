@@ -112,7 +112,8 @@ type
     cmdRst2tex,               # convert a reStructuredText file to TeX
     cmdInteractive,           # start interactive session
     cmdRun,                   # run the project via TCC backend
-    cmdJsonScript             # compile a .json build file
+    cmdJsonScript,            # compile a .json build file
+    cmdCompileToWasm          # compile to WebAssembly
   TStringSeq* = seq[string]
   TGCMode* = enum             # the selected GC
     gcUnselected, gcNone, gcBoehm, gcRegions, gcMarkAndSweep, gcArc, gcOrc,
@@ -468,6 +469,7 @@ const
   DefaultConfigNims* = RelativeFile"config.nims"
   DocConfig* = RelativeFile"nimdoc.cfg"
   DocTexConfig* = RelativeFile"nimdoc.tex.cfg"
+  WasmGlue* = RelativeFile"nimwasm.cfg"
 
 const oKeepVariableNames* = true
 
