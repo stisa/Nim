@@ -41,7 +41,8 @@ const
     "osproc",
     "shouldfail",
     "dir with space",
-    "destructor"
+    "destructor",
+    "wasm"
   ]
 
 proc isTestFile*(file: string): bool =
@@ -289,6 +290,27 @@ proc jsTests(r: var TResults, cat: Category, options: string) =
   for testfile in ["strutils", "json", "random", "times", "logging"]:
     test "lib/pure/" & testfile & ".nim"
 
+# ------------------------- WASM tests ------------------------------------------
+
+proc wasmTests(r: var TResults, cat: Category, options: string) =
+  template test(filename: untyped) =
+    testSpec r, makeTest(filename, options, cat), {targetWasm}
+    testSpec r, makeTest(filename, options & " -d:release", cat), {targetWasm}
+
+  for t in os.walkFiles("tests/wasm/t*.nim"):
+    test(t)
+  for testfile in ["exception/texceptions", "exception/texcpt1",
+                   "exception/texcsub", "exception/tfinally",
+                   "exception/tfinally2", "exception/tfinally3",
+                   "actiontable/tactiontable", "method/tmultimjs",
+                   "varres/tvarres0", "varres/tvarres3", "varres/tvarres4",
+                   "varres/tvartup", "misc/tints", "misc/tunsignedinc",
+                   "async/tjsandnativeasync"]:
+    test "tests/" & testfile & ".nim"
+
+  for testfile in ["strutils", "json", "random", "times", "logging"]:
+    test "lib/pure/" & testfile & ".nim"
+
 # ------------------------- nim in action -----------
 
 proc testNimInAction(r: var TResults, cat: Category, options: string) =
@@ -299,6 +321,9 @@ proc testNimInAction(r: var TResults, cat: Category, options: string) =
 
   template testJS(filename: untyped) =
     testSpec r, makeTest(filename, options, cat), {targetJS}
+
+  template testWASM(filename: untyped) =
+    testSpec r, makeTest(filename, options, cat), {targetWasm}
 
   template testCPP(filename: untyped) =
     testSpec r, makeTest(filename, options, cat), {targetCpp}
@@ -544,7 +569,7 @@ proc `&.?`(a, b: string): string =
 
 proc processSingleTest(r: var TResults, cat: Category, options, test: string) =
   let test = testsDir &.? cat.string / test
-  let target = if cat.string.normalize == "js": targetJS else: targetC
+  let target = if cat.string.normalize == "js": targetJS elif cat.string.normalize == "wasm": targetWasm else: targetC
   if existsFile(test):
     testSpec r, makeTest(test, options, cat), {target}
   else:

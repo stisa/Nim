@@ -80,12 +80,12 @@ proc fillLoc(a: var TLoc, k: TLocKind, lode: PNode, p: BiggestInt, s: TStorageLo
     if a.p == -1: a.p = p
 ]#
 proc genSymLoc(w: WasmGen, s: PSym): WasmNode =
-  echo "sym ", s.name.s," owner ", s.owner.name.s
-  echo "pos ", s.position, " offset ", s.offset
-  debug s #FIXME: s is not b when instatiating contains
+  #echo "sym ", s.name.s," owner ", s.owner.name.s
+  #echo "pos ", s.position, " offset ", s.offset
+  #debug s #FIXME: s is not b when instatiating contains
   case s.kind:
   of skParam:
-    echo "experiment: genSymParam"
+    #echo "experiment: genSymParam"
     result = newGet(woGetLocal, s.position)
   else:
     assert s.offset >= 0, "uninitialized location for: " & s.name.s & " from " & s.owner.name.s
@@ -97,7 +97,7 @@ proc store(w: WasmGen, typ: PType, n: PNode,  memIndex: var int): WasmNode =
   # initialization expr, so no node is returned.
   #echo treeToYaml n
   var dataseg: seq[byte] = newSeq[byte]()
-  echo "# store ", n.kind #, " owner: ", $owner.name.s
+  #echo "# store ", n.kind #, " owner: ", $owner.name.s
   result = newOpList()
   
   case n.kind:
@@ -147,7 +147,7 @@ proc store(w: WasmGen, typ: PType, n: PNode,  memIndex: var int): WasmNode =
       let gn = w.store(val.typ, val, memIndex)
       if not gn.isNil: result.sons.add(gn)
   of nkCurly:
-    echo memIndex
+    #echo memIndex
     # this is a set. This means each val in n is either a (u)int8 or (u)int16
     # and thus val <= 65535 (max of uint16)
     dataseg.setLen(4)
@@ -203,8 +203,8 @@ proc genBody(w: WasmGen,
     result.sons.add(newSet(woSetLocal, params.len, newLoad(memLoadI32, 0, 1, newConst(heapPtrLoc))))
   if n.kind == nkStmtList:
     for st in n:
-      echo "# genBody ", $st.kind
-      echo w.config.treeToYaml(st)
+      #echo "# genBody ", $st.kind
+      #echo w.config.treeToYaml(st)
       explicitRet = st.kind == nkReturnStmt
       let gs = w.gen(st)
       if not gs.isNil: result.sons.add(gs)
@@ -266,7 +266,7 @@ proc genProc(w: WasmGen, s: PSym) =
   
   var
     fntype = newType(rs=res)
-  echo "res: ", w.config.typeToYaml(s.typ.sons[0])
+  #echo "res: ", w.config.typeToYaml(s.typ.sons[0])
   for val in params:
     fntype.params.add(val)
   
@@ -551,8 +551,8 @@ proc callMagic(w: WasmGen, s: PSym, n: PNode): WasmNode =
       )
     
   of mNewSeqOfCap:
-    echo "# mNewSeqOfCap"
-    echo w.config.treeToYaml(n)
+    #echo "# mNewSeqOfCap"
+    #echo w.config.treeToYaml(n)
     w.config.internalError("# TODO: mNewSeqOfCap")
     # we receive the len of the block to reserve.
     # Since this proc is completely a magic, we can do everything here.
@@ -579,7 +579,7 @@ proc callMagic(w: WasmGen, s: PSym, n: PNode): WasmNode =
   of mChr:
     result = w.gen(n[1][0]) # skip nkChckRange for now... FIXME:
   else: 
-    echo w.config.treeToYaml(n)
+    #echo w.config.treeToYaml(n)
     w.config.internalError("# callMagic unhandled magic: " & $s.magic)
 
 proc genAsgn(w: WasmGen, lhsNode, rhsNode: PNode): WasmNode =
@@ -593,7 +593,7 @@ proc genAsgn(w: WasmGen, lhsNode, rhsNode: PNode): WasmNode =
   # - a[b] = c
   # - strings, seq (they copy, so data(a) = data(c) but addr a != addr c)
   #echo treeToYaml lhsNode
-  echo "# genAsgn ", lhsNode.kind #, " - ", lhsNode.typ.kind 
+  #echo "# genAsgn ", lhsNode.kind #, " - ", lhsNode.typ.kind 
   case lhsNode.kind
   of nkDerefExpr: 
     # index is the location pointed to
@@ -700,7 +700,7 @@ proc genAccess(w: WasmGen, n: PNode): WasmNode =
   )
   #if not t.isNil and not t.lastSon.isNil and t.lastSon.kind in {tySequence, tyString}:
   #  accIndex = newAdd32(accIndex, newConst(4'i32)) # due to len taking 4 bytes
-  echo "genaccess ", t.kind, " ", w.config.mapType(t)
+  #echo "genaccess ", t.kind, " ", w.config.mapType(t)
   case w.config.mapType(t):
   of vtI32: result = newLoad(memLoadI32, 0 , 1, accIndex)
   of vtF32: result = newLoad(memLoadF32, 0 , 1, accIndex)
@@ -725,13 +725,13 @@ proc gen(w: WasmGen, n: PNode): WasmNode =
   of nkFloatLit, nkFloat64Lit:
     result = newConst(n.floatVal.float64)
   of nkCallKinds:
-    echo "# genCall" #, treeToYaml n
+    #echo "# genCall" #, treeToYaml n
     let 
       s = n[namePos].sym
       isMagic = s.magic != mNone
       
     if isMagic:
-      echo "ismagic ", $s.magic
+      #echo "ismagic ", $s.magic
   
       return w.callMagic(s, n)
     elif not w.generatedProcs.hasKey(s.mangleName):
@@ -750,19 +750,19 @@ proc gen(w: WasmGen, n: PNode): WasmNode =
       result = newConst(n.sym.position.int32)
     of skResult:
       #initialize the result sym
-      debug n.sym
-      echo n.sym.offset
+      #debug n.sym
+      #echo n.sym.offset
       # todo: n.sym.offset??
       # madness ensues
-      echo "get result at pos: ", n.sym.position
+      #echo "get result at pos: ", n.sym.position
       # result already initialized in local
       # this won't work...
       result = newGet(woGetLocal, n.sym.position)
     else:
-      echo "gen sym ", n.sym.name.s," owner ", n.sym.owner.name.s
-      echo "gen pos ", n.sym.position, " offset ", n.sym.offset
-      debug n.sym
-      echo "gen typ ", n.sym.typ.skipTypes(abstractInst).kind
+      #echo "gen sym ", n.sym.name.s," owner ", n.sym.owner.name.s
+      #echo "gen pos ", n.sym.position, " offset ", n.sym.offset
+      #debug n.sym
+      #echo "gen typ ", n.sym.typ.skipTypes(abstractInst).kind
       if n.sym.typ.skipTypes(abstractInst).kind in passedAsBackendPtr:
         result = w.genSymLoc(n.sym)
       else:
@@ -780,7 +780,7 @@ proc gen(w: WasmGen, n: PNode): WasmNode =
       if not gn.isNil: result.sons.add(gn)
   of nkVarSection, nkLetSection, nkConstSection:
     #echo treeToYaml n
-    echo "# genVarSection" #TODO
+    #echo "# genVarSection" #TODO
     result = newOpList()
     for iddef in n.sons:
       if iddef[namePos].kind == nkSym: # Top level symbols/sections

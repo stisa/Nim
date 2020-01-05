@@ -99,10 +99,13 @@ proc handleCmdLine(cache: IdentCache; conf: ConfigRef) =
   when hasTinyCBackend:
     if conf.cmd == cmdRun:
       tccgen.run(conf.arguments)
+  
   if optRun in conf.globalOptions:
     var ex = quoteShell conf.absOutFile
-    if conf.cmd == cmdCompileToJS or conf.cmd == cmdCompileToWasm:
+    if conf.cmd == cmdCompileToJS:
       execExternalProgram(conf, findNodeJs() & " " & ex & ' ' & conf.arguments)
+    elif conf.cmd == cmdCompileToWasm:
+      execExternalProgram(conf, findNodeJs() & " " & changeFileExt(ex, "js") & ' ' & conf.arguments)
     else:
       execExternalProgram(conf, ex & ' ' & conf.arguments)
 
