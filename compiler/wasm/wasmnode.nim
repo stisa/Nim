@@ -70,7 +70,7 @@ proc newConst*(val:SomeUnsignedInt):WasmNode =
     result = newWANode(constUI32)
   result.uintVal = val
 
-proc newConst*(val:SomeReal):WasmNode =
+proc newConst*(val:SomeFloat):WasmNode =
   when val is float32:
     result = newWANode(constF32)
   else:

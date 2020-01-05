@@ -14,26 +14,18 @@ import sequtils
 proc toBytes*(val:SomeNumber):seq[byte] =
   # Maybe something less unsafe might be a good idea
   result = newSeq[byte](sizeof(val))
-  copymem(
-<<<<<<< HEAD
+  copyMem(
       (pointer)(addr result[0]), 
-=======
-      (pointer)addr result[0], 
->>>>>>> d546b4d2e2e85c9cdf7258c2f24264236accbca3
-      (pointer)unsafeaddr(val),
+      (pointer)unsafeAddr(val),
       sizeof(val)
   )
 
 proc toBytes*(s: string): seq[byte] =
-  assert(not s.isNil)
+  #assert(not s.isNil)
   result = newSeq[byte](s.len)
-  copymem(
-<<<<<<< HEAD
+  copyMem(
     (pointer)(addr result[0]), 
-=======
-    (pointer)addr result[0], 
->>>>>>> d546b4d2e2e85c9cdf7258c2f24264236accbca3
-    (pointer)unsafeaddr(s[0]),
+    (pointer)unsafeAddr(s[0]),
     s.len
   )
 
@@ -340,22 +332,22 @@ proc encode(i: WAsmImport): tuple[t:seq[byte],i:seq[byte]] =
   result = (@[], @[])
   # types part
   result.t.add(0x60.byte) # FIXME: support type kind of other than `func`
-  result.t.add(i.typ.params.len.int32.unsignedLeb128)
+  result.t.add(i.typ.params.len.int32.unsignedLEB128)
   if i.typ.params.len>0:
     for par in i.typ.params:
       result.t.add(encode(par))
   if i.typ.res == vtNone:
-    result.t.add(0'i32.unsignedLeb128)
+    result.t.add(0'i32.unsignedLEB128)
   else:
-    result.t.add(1'i32.unsignedLeb128 & encode(i.typ.res))
+    result.t.add(1'i32.unsignedLEB128 & encode(i.typ.res))
   # imports part
-  result.i.add(i.module.len.int32.unsignedLeb128)
+  result.i.add(i.module.len.int32.unsignedLEB128)
   result.i.add(i.module.toBytes)
-  result.i.add(i.name.len.int32.unsignedLeb128)
+  result.i.add(i.name.len.int32.unsignedLEB128)
   result.i.add(i.name.toBytes)
   result.i.add(encode(i.kind)) # import kind
   case i.kind:
-  of ekFunction: result.i.add(i.id.int32.unsignedLeb128)
+  of ekFunction: result.i.add(i.id.int32.unsignedLEB128)
   else: assert(i.kind!=ekFunction)
 
 
@@ -366,65 +358,65 @@ proc encode(imports: seq[WAsmImport]): tuple[num: int, it: seq[byte], i: seq[byt
     result.it.add(enc.t)
     result.i.add(enc.i)
 
-proc encode(exports: seq[WasmExport]): tuple[num: int, e: seq[byte]] =
+proc encode(exports: seq[WAsmExport]): tuple[num: int, e: seq[byte]] =
   result = (exports.len, @[])
   for e in exports:
-    result.e.add(e.name.len.int32.unsignedLeb128)
+    result.e.add(e.name.len.int32.unsignedLEB128)
     result.e.add(e.name.toBytes)
     result.e.add(encode(e.kind))
-    result.e.add(e.id.int32.unsignedLeb128)
+    result.e.add(e.id.int32.unsignedLEB128)
 
-proc encode(mem: WasmMemory): tuple[num: int, m: seq[byte]] =
+proc encode(mem: WAsmMemory): tuple[num: int, m: seq[byte]] =
   result = (mem.id, @[])
   if mem.id == 0: return
 
-  result.m.add(0'i32.unsignedLeb128)
-  result.m.add(mem.pages.int32.unsignedLeb128)
+  result.m.add(0'i32.unsignedLEB128)
+  result.m.add(mem.pages.int32.unsignedLEB128)
 
-proc encode(data: seq[WasmData]): tuple[num: int, d: seq[byte]] =
+proc encode(data: seq[WAsmData]): tuple[num: int, d: seq[byte]] =
   result = (data.len, @[])
   for d in data:
     # header
-    result.d.add(0'i32.unsignedLeb128) # memory in which to store data
+    result.d.add(0'i32.unsignedLEB128) # memory in which to store data
     result.d.add(0x41.byte) # i32.const
     result.d.add(d.index.int32.signedLeb128) # i32.literal `d.id`
     result.d.add(0x0b.byte) # end
-    result.d.add(d.payload.len.int32.unsignedLeb128) # segment length
+    result.d.add(d.payload.len.int32.unsignedLEB128) # segment length
     # segment
     result.d.add(d.payload)
 
-proc encode(f: WasmFunction): tuple[t:seq[byte],f:seq[byte]] =
+proc encode(f: WAsmFunction): tuple[t:seq[byte],f:seq[byte]] =
   result = (@[], @[])
   # types part
   result.t.add(0x60.byte)
-  result.t.add(f.typ.params.len.int32.unsignedLeb128)
+  result.t.add(f.typ.params.len.int32.unsignedLEB128)
   if f.typ.params.len>0:
     for par in f.typ.params:
       result.t.add(encode(par))
   if f.typ.res == vtNone:
-    result.t.add(0'i32.unsignedLeb128)
+    result.t.add(0'i32.unsignedLEB128)
   else:
-    result.t.add(1'i32.unsignedLeb128 & encode(f.typ.res))
+    result.t.add(1'i32.unsignedLEB128 & encode(f.typ.res))
   
   # functions (code) part
   var temp = newSeq[byte]()
   # local variable declarations
-  if f.locals.isNil:
-    temp.add(0'i32.unsignedLeb128)
+  if f.locals.len==0: # TODO: proper fix for isNil
+    temp.add(0'i32.unsignedLEB128)
   else:
-    temp.add(f.locals.len.int32.unsignedLeb128)
+    temp.add(f.locals.len.int32.unsignedLEB128)
     for local in f.locals:
-      temp.add(1'i32.unsignedLeb128)
+      temp.add(1'i32.unsignedLEB128)
       temp.add(encode(local))
   
   temp.add(encode(f.body)) # actual code in the function
   temp.add(0x0b.byte) # end marker
 
-  result.f.add((temp.len).int32.unsignedLeb128) # total length of body and decl
+  result.f.add((temp.len).int32.unsignedLEB128) # total length of body and decl
   result.f.add(temp)
 
 
-proc encode(functions: seq[WasmFunction]): tuple[num: int, ft: seq[byte], f: seq[byte]] =
+proc encode(functions: seq[WAsmFunction]): tuple[num: int, ft: seq[byte], f: seq[byte]] =
   result = (functions.len, @[], @[])
   for f in functions:
     let enc = encode(f)
@@ -451,45 +443,45 @@ proc encode*(m: WAsmModule): seq[byte] =
   let (fnNum,fnTypes, functions) = encode(m.functions)
 
   # 1 TypeSection
-  result.add(1'i32.unsignedLeb128) # Type section
-  result.add((1+importedTypes.len+fnTypes.len).int32.unsignedLeb128)  # length of type section in bytes
+  result.add(1'i32.unsignedLEB128) # Type section
+  result.add((1+importedTypes.len+fnTypes.len).int32.unsignedLEB128)  # length of type section in bytes
                                                           # +1 because the num of types
-  result.add((importNum+fnNum).int32.unsignedLeb128) # num of types
+  result.add((importNum+fnNum).int32.unsignedLEB128) # num of types
   result.add(importedTypes) # import types data
   result.add(fnTypes) # function types data
   
   # 2 ImportSection
-  result.add(2'i32.unsignedLeb128) # Import section
-  result.add((1+imports.len).int32.unsignedLeb128)  # length of import section in bytes
+  result.add(2'i32.unsignedLEB128) # Import section
+  result.add((1+imports.len).int32.unsignedLEB128)  # length of import section in bytes
                                                     # +1 because the num of imports
-  result.add(importNum.int32.unsignedLeb128) # num of import
+  result.add(importNum.int32.unsignedLEB128) # num of import
   result.add(imports) # imports data
   
   # 3 FunctionSection
   # this part just needs to add indexes from importNum to fnNum
   # because types are guaranteed to be ordered (iT1,...,iTn,fT1,...,fTn)
-  result.add(3'i32.unsignedLeb128)
-  result.add((1+fnNum).int32.unsignedLeb128) # TODO: is this always true?
+  result.add(3'i32.unsignedLEB128)
+  result.add((1+fnNum).int32.unsignedLEB128) # TODO: is this always true?
   result.add(fnNum.int32.unsignedLEB128) # num of (non imported) functions
   for idx in importNum..<(importNum+fnNum):
-    result.add(idx.int32.unsignedLeb128)
+    result.add(idx.int32.unsignedLEB128)
 
   # 4 Table
 
   # 5 MemorySection
-  result.add(5'i32.unsignedLeb128)
-  result.add((1+memory.len).int32.unsignedLeb128)  
-  result.add(memNum.int32.unsignedLeb128)
+  result.add(5'i32.unsignedLEB128)
+  result.add((1+memory.len).int32.unsignedLEB128)  
+  result.add(memNum.int32.unsignedLEB128)
   result.add(memory)
   
   # 6 GlobalSection
   # TODO:
   
   # 7 ExportSection
-  result.add(7'i32.unsignedLeb128) # Export section
-  result.add((1+exports.len).int32.unsignedLeb128)  # length of import section in bytes
+  result.add(7'i32.unsignedLEB128) # Export section
+  result.add((1+exports.len).int32.unsignedLEB128)  # length of import section in bytes
                                                     # +1 because the num of imports
-  result.add(exportNum.int32.unsignedLeb128) # num of import
+  result.add(exportNum.int32.unsignedLEB128) # num of import
   result.add(exports) # imports data
 
   # 8 StartSection
@@ -497,27 +489,23 @@ proc encode*(m: WAsmModule): seq[byte] =
   # 9 ElementSection
 
   # 10 CodeSection
-  result.add(10'i32.unsignedLeb128)
-  result.add((1+functions.len).int32.unsignedLeb128)
-  result.add(fnNum.int32.unsignedLeb128)
+  result.add(10'i32.unsignedLEB128)
+  result.add((1+functions.len).int32.unsignedLEB128)
+  result.add(fnNum.int32.unsignedLEB128)
   result.add(functions)
 
   # 11 DataSection
-  result.add(11'i32.unsignedLeb128)
-  result.add((1+data.len).int32.unsignedLeb128)
-  result.add(dataNum.int32.unsignedLeb128)
+  result.add(11'i32.unsignedLEB128)
+  result.add((1+data.len).int32.unsignedLEB128)
+  result.add(dataNum.int32.unsignedLEB128)
   result.add(data)
 
 proc writeTo*(m: seq[byte], name:string) =
-  assert(not m.isNil)
+  # assert(not m.len == 0)
   var res = newString(m.len)
-  copymem(
-<<<<<<< HEAD
+  copyMem(
     (pointer)(addr res[0]), 
-=======
-    (pointer)addr res[0], 
->>>>>>> d546b4d2e2e85c9cdf7258c2f24264236accbca3
-    (pointer)unsafeaddr(m[0]),
+    (pointer)unsafeAddr(m[0]),
     m.len
   )
   writeFile(name, res)

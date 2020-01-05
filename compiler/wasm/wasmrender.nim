@@ -8,7 +8,7 @@ proc render*(n: WasmNode, indlv = 0): string
 
 proc render(v: WasmValueType): string = "\"" & ($v)[2..^1] & "\""
 proc render(v: seq[WasmValueType]): string =
-  if v.isNil: return "\"None\""
+  if v.len == 0: return "\"None\"" # TODO: fix isNil changes properly
   result = ""
   for i, p in v:
     if i == v.len-1:
@@ -18,7 +18,7 @@ proc render(v: seq[WasmValueType]): string =
 
 proc render(v: WasmExternalKind): string = "\"" & ($v)[2..^1] & "\""
 proc render(bytes: seq[byte],hex:bool = false): string =
-  if bytes.isNil: return "[]"
+  if bytes.len==0: return "[]" # TODO: fix isNil changes properly
   result = ""
   if hex:
     for b in countdown(bytes.len-1,0,1):
@@ -42,7 +42,7 @@ proc render(t: WasmType, indlv = 0): string =
   result = result.indent(indlv)
 
 proc render*(sn: seq[WasmNode], indlv = 0): string =
-  if sn.isNil or sn.len == 0: return "[]"
+  if sn.len == 0: return "[]" # TODO: fix isNil changes properly
   var sons = ""
 
   for i, s in sn:
@@ -214,11 +214,11 @@ $6
   result = result.indent(indlv)
 
 when isMainModule:
-  import wanodes
+  import wasmnode
   var 
     m = newModule("test")
-    i = newImport(0,ekFunction, "glue", "log", newType(vtNone, vtI32, vtF32, vtF32))
-    i2 = newImport(0,ekFunction, "glue", "assert", newType(vtNone, vtI32, vtF32, vtF32))
+    i = newImport(0,ekFunction, "glue", "log", "logM", newType(vtNone, vtI32, vtF32, vtF32))
+    i2 = newImport(0,ekFunction, "glue", "assert", "assertM", newType(vtNone, vtI32, vtF32, vtF32))
     e = newExport(0,ekFunction, "log")
     mem = newMemory(0)
     d = newData(4, ['\0'.byte, 'a'.byte, 's'.byte, 'm'.byte])

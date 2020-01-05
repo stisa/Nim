@@ -6,12 +6,12 @@ import
 
 from math import ceil,log2
 
-from modulegraphs import ModuleGraph
+from modulegraphs import ModuleGraph, PPassContext
 
 # TODO: more flexibility in glue, maybe save it as config in context
 
 type
-  WasmGen = ref object of TPassContext
+  WasmGen = ref object of PPassContext
     initExprs: seq[WasmNode] # sequence of initializer expressions. for use in start sec
     nextimportIdx: Natural # function index space ( doesn't account for hoisting of imported procs )
     nextFuncIdx: Natural # the function index space (only for non-imported funcs)
@@ -19,12 +19,16 @@ type
     nextMemIdx: Natural # the linear memory index space
     nextTableIdx: Natural # the table index space
     s: PSym # symbol of the current module, taken from myOpen
-    m : WasmModule #current module
+    m : WAsmModule #current module
     generatedProcs: Table[string,tuple[id:int,imported:bool]] # name, funcIdx
     generatedTypeInfos: Table[string, int32] # name, location in memory
     stack: tuple[top,bottom:int32] # stack pointers location, used in procs?
+    
+    graph: ModuleGraph
+    config: ConfigRef
+    #sigConflicts: CountTable[SigHash]
   
-proc newWasmGen(s:PSym): WasmGen =
+proc newWasmGen(s:PSym, g: ModuleGraph): WasmGen =
   result = WasmGen(
     generatedProcs: initTable[string,tuple[id:int,imported:bool]](),
     generatedTypeInfos: initTable[string,int32](),
@@ -42,6 +46,8 @@ proc newWasmGen(s:PSym): WasmGen =
   #initialize the module's sections
   result.m.memory = newMemory()
   add result.m.exports, newExport(0, ekMemory, "$memory")
+  result.graph = g;
+  result.config = g.config;
 
 const 
   passedAsBackendPtr = {tyVar, tyObject} 
@@ -98,13 +104,13 @@ proc store(w: WasmGen, typ: PType, n: PNode,  memIndex: var int): WasmNode =
   of nkEmpty:
     # eg. var s: string
     # produces 4 nil bytes where the string ptr goes
-    dataseg.setLen(typ.getSize.alignTo4)
+    dataseg.setLen(w.config.getSize(typ).alignTo4)
   of nkInt64Lit, nkUInt64Lit:
-    internalError("Wasm MVP integers are 32bit only")
+    w.config.internalError("Wasm MVP integers are 32bit only")
   of nkCharLit, nkIntLit, nkInt8Lit,
     nkInt16Lit, nkInt32Lit:
-    if typ.kind in tyUInt..tyUint32:
-      dataseg = n.intVal.uint32.toBytes
+    if typ.kind in tyUInt..tyUInt32:
+      dataseg = toBytes(n.intVal.uint32)
     else:
       dataseg = n.intVal.int32.toBytes
   of nkUIntLit, nkUInt8Lit, nkUInt16Lit, nkUInt32Lit:
@@ -220,7 +226,7 @@ proc genBody(w: WasmGen,
       newReturn(newGet(woGetLocal, params.len))
     )
   else:
-    internalError("genBody Something wrong in generating result")
+    w.config.internalError("genBody Something wrong in generating result")
 proc genProc(w: WasmGen, s: PSym) =
   let 
     fparams = s.typ.n
@@ -229,22 +235,22 @@ proc genProc(w: WasmGen, s: PSym) =
   
   var 
     params = newSeq[WasmValueType](fparams.sons.len-1)#initTable[string,tuple[t: PType, vt:WasmValueType,default:PNode]]()
-    res = mapType(s.typ.sons[0])
+    res = w.config.mapType(s.typ.sons[0])
   #echo  typeToYaml s.typ
   for i, p in params.mpairs:
     let par = fparams[i+1]
     if par.kind == nkIdentDefs:
       if par.len > 3:
         for i in 0..<par.len-2: # eg a,b: int
-          p = mapType(par[^2].typ)
+          p = w.config.mapType(par[^2].typ)
       else:
         var typ: PType = par[1].typ
         if par[2].kind != nkEmpty:
           if par[2].kind == nkDotExpr:
             typ = par[2][0].typ
-        p = mapType(typ)
+        p = w.config.mapType(typ)
     elif par.kind == nkSym:
-      p = mapType(par.sym.typ)
+      p = w.config.mapType(par.sym.typ)
     elif par.kind == nkEmpty: continue
     else:
       internalError("# unknown putProc par kind: " & $par.kind)
@@ -962,15 +968,11 @@ proc myOpenCached(graph: ModuleGraph; s: PSym, rd: PRodReader): PPassContext =
   internalError("symbol files are not possible with the WASM code generator")
   result = nil
 
-proc myOpen(graph: ModuleGraph; s: PSym; cache: IdentCache): PPassContext =
+proc myOpen(graph: ModuleGraph; s: PSymS): PPassContext =
   echo "# begin myOpen ",s.info.fileIndex.toFilename," s.name: ",$s.name.s
-  if genCtx.isNil: genCtx = newWasmGen(s)
+  if genCtx.isNil: genCtx = newWasmGen(s, graph)
   genCtx.s = s
   result = genCtx
   echo "# end myOpen ",s.info.fileIndex.toFilename," s.name: ",$s.name.s
 
-<<<<<<< HEAD
 const WasmGenPass* = makePass(myOpen, myProcess, myClose)
-=======
-const WasmGenPass* = makePass(myOpen, myOpenCached, myProcess, myClose)
->>>>>>> d546b4d2e2e85c9cdf7258c2f24264236accbca3

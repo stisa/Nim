@@ -1,5 +1,5 @@
 import
-  ast, astalgo, types, sighashes, msgs, wordrecg, trees, ropes
+  ast, astalgo, types, sighashes, msgs, wordrecg, trees, ropes, options, modulegraphs
 
 import md5
 
@@ -21,14 +21,14 @@ proc getPragmaStmt*(n: PNode, w: TSpecialWord): PNode =
 proc stmtsContainPragma*(n: PNode, w: TSpecialWord): bool =
   result = getPragmaStmt(n, w) != nil
 
-proc mapType*(tt:PType):WasmValueType =
+proc mapType*(c: ConfigRef, tt:PType):WasmValueType =
   let t = if not tt.isNil: tt.skipTypes(abstractVarRange) else: tt
   if t.isNil: return vtNone
   case t.kind:
   #of tyBool,tyInt,tyInt32,tyUInt32,tyUInt,tyUInt8,tyInt16,
   #  tyString, tyPointer, tySequence, tyArray, tyProc,
   #  tyOrdinal, tyVar, tyOpenArray, tyObject, tyChar:
-  of tyBool,tyChar, tyInt..tyInt32, tyUint..tyUint32,
+  of tyBool,tyChar, tyInt..tyInt32, tyUInt..tyUInt32,
     tyString, tyPtr, tyRef, tyPointer, tyObject, tySet,
     tySequence, tyEnum, tyArray:
     result = vtI32
@@ -37,25 +37,25 @@ proc mapType*(tt:PType):WasmValueType =
   of tyFloat, tyFloat64:
     result = vtF64
   else:
-    internalError("unmapped type kind " & $t.kind)
+    c.internalError("unmapped type kind " & $t.kind)
 
-proc mapStoreKind*(tt:PType): WasmOpKind =
-  case mapType(tt):
+proc mapStoreKind*(c: ConfigRef, tt:PType): WasmOpKind =
+  case c.mapType(tt):
   of vtI32: result = memStoreI32
   of vtI64: result = memStoreI32 # no 64 bit in wasm
   of vtF32: result = memStoreF32
   of vtF64: result = memStoreF64
   else:
-    internalError("unmapped store for type: " & $tt.kind)
+    c.internalError("unmapped store for type: " & $tt.kind)
 
-proc mapLoadKind*(tt:PType): WasmOpKind =
-  case mapType(tt):
+proc mapLoadKind*(c: ConfigRef, tt:PType): WasmOpKind =
+  case c.mapType(tt):
   of vtI32: result = memLoadI32
   of vtI64: result = memLoadI32
   of vtF32: result = memLoadF32
   of vtF64: result = memLoadF64
   else:
-    internalError("unmapped load " & $mapType(tt) & " for type: " & $tt.kind)
+    c.internalError("unmapped load " & $(c.mapType(tt)) & " for type: " & $tt.kind)
     
 
 

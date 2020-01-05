@@ -52,6 +52,7 @@ type
     targetCpp = "C++"
     targetObjC = "ObjC"
     targetJS = "JS"
+    targetWasm ="WAsm"
 
   TSpec* = object
     action*: TTestAction
@@ -83,8 +84,8 @@ proc getCmd*(s: TSpec): string =
     result = s.cmd
 
 const
-  targetToExt*: array[TTarget, string] = ["nim.c", "nim.cpp", "nim.m", "js"]
-  targetToCmd*: array[TTarget, string] = ["c", "cpp", "objc", "js"]
+  targetToExt*: array[TTarget, string] = ["nim.c", "nim.cpp", "nim.m", "js", "js"]
+  targetToCmd*: array[TTarget, string] = ["c", "cpp", "objc", "js", "wasm"]
 
 when not declared(parseCfgBool):
   # candidate for the stdlib:
@@ -116,6 +117,7 @@ proc parseTargets*(value: string): set[TTarget] =
     of "cpp", "c++": result.incl(targetCpp)
     of "objc": result.incl(targetObjC)
     of "js": result.incl(targetJS)
+    of "wasm": result.incl(targetWasm)
     else: echo "target ignored: " & v
 
 proc addLine*(self: var string; a: string) =
@@ -261,6 +263,8 @@ proc parseSpec*(filename: string): TSpec =
             result.targets.incl(targetObjC)
           of "js":
             result.targets.incl(targetJS)
+          of "wasm": 
+            result.targets.incl(targetWasm)
           else:
             result.parseErrors.addLine "cannot interpret as a target: ", e.value
       else:

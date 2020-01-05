@@ -40,7 +40,7 @@ Options:
   --print                   also print results to the console
   --simulate                see what tests would be run but don't run them (for debugging)
   --failing                 only show failing/ignored tests
-  --targets:"c c++ js objc" run tests for specified targets (default: all)
+  --targets:"c c++ js objc wasm" run tests for specified targets (default: all)
   --nim:path                use a particular nim executable (default: $$PATH/nim)
   --directory:dir           Change to directory dir before reading the tests or doing anything else.
   --colors:on|off           Turn messagescoloring on|off.
@@ -335,6 +335,8 @@ proc cmpMsgs(r: var TResults, expected, given: TSpec, test: TTest, target: TTarg
 proc generatedFile(test: TTest, target: TTarget): string =
   if target == targetJS:
     result = test.name.changeFileExt("js")
+  elif target == targetWasm:
+    result = test.name.changeFileExt("js")
   else:
     let (_, name, _) = test.name.splitFile
     let ext = targetToExt[target]
@@ -425,7 +427,7 @@ proc testSpecHelper(r: var TResults, test: TTest, expected: TSpec, target: TTarg
     if given.err != reSuccess:
       r.addResult(test, target, "", "$ " & given.cmd & "\n" & given.nimout, given.err)
     else:
-      let isJsTarget = target == targetJS
+      let isJsTarget = target == targetJS or target == targetWasm
       var exeFile = changeFileExt(test.name, if isJsTarget: "js" else: ExeExt)
       if not existsFile(exeFile):
         r.addResult(test, target, expected.output,
