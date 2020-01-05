@@ -1,6 +1,6 @@
 import
   ast, astalgo, options, msgs, idents, types, passes,
-  ropes,
+  ropes, wordrecg,
   ospaths, tables, os, strutils, pathutils,
   wasm/[wasmast, wasmstructure, wasmencode, wasmnode, wasmleb128, wasmrender], wasmutils
 
@@ -13,7 +13,7 @@ from modulegraphs import ModuleGraph, PPassContext
 type
   WasmGen = ref object of PPassContext
     initExprs: seq[WasmNode] # sequence of initializer expressions. for use in start sec
-    nextimportIdx: Natural # function index space ( doesn't account for hoisting of imported procs )
+    nextImportIdx: Natural # function index space ( doesn't account for hoisting of imported procs )
     nextFuncIdx: Natural # the function index space (only for non-imported funcs)
     nextGlobalIdx: Natural # the global index space
     nextMemIdx: Natural # the linear memory index space
@@ -253,7 +253,7 @@ proc genProc(w: WasmGen, s: PSym) =
       p = w.config.mapType(par.sym.typ)
     elif par.kind == nkEmpty: continue
     else:
-      internalError("# unknown putProc par kind: " & $par.kind)
+      w.config.internalError("# unknown putProc par kind: " & $par.kind)
   
   if not s.typ.sons[0].isNil:
     # since wasm allows shadowing of params with local vars, this
@@ -266,7 +266,7 @@ proc genProc(w: WasmGen, s: PSym) =
   
   var
     fntype = newType(rs=res)
-  echo "res: ", typeToYaml s.typ.sons[0]
+  echo "res: ", w.config.typeToYaml(s.typ.sons[0])
   for val in params:
     fntype.params.add(val)
   
@@ -278,13 +278,13 @@ proc genProc(w: WasmGen, s: PSym) =
       importcPrg = pragmas.getPragmaStmt(wImportc)
     if headerPrg.isNil: 
       #echo treeToYaml s.ast
-      internalerror("putProc: missing header for imported proc "&s.name.s)
+      w.config.internalError("putProc: missing header for imported proc "&s.name.s)
     elif importcPrg.isNil:
-      internalerror("putProc: missing importc for imported proc "&s.name.s)
+      w.config.internalError("putProc: missing importc for imported proc "&s.name.s)
     
     let 
       headername = headerPrg[1].strVal
-      importcname = importcPrg[1].strval
+      importcname = importcPrg[1].strVal
     
     w.m.imports.add(
       newImport(
@@ -297,14 +297,14 @@ proc genProc(w: WasmGen, s: PSym) =
     w.m.functions.add(
       newFunction(
         w.nextFuncIdx, fntype, w.genBody(params, body, s.typ.sons[0]),
-        if fntype.res != vtNone: @[fntype.res] else: nil, 
+        if fntype.res != vtNone: @[fntype.res] else: @[], 
         s.mangleName, s.flags.contains(sfExported)
       )
     )
     w.generatedProcs.add(s.mangleName, (w.nextFuncIdx,false)) 
     inc w.nextFuncIdx
   else:
-    internalError("# genProc generating unused proc " & s.name.s)
+    w.config.internalError("# genProc generating unused proc " & s.name.s)
 
 proc getMagicOp(c: ConfigRef, m: TMagic): WasmOpKind =
   result = case m:
@@ -443,7 +443,7 @@ proc callMagic(w: WasmGen, s: PSym, n: PNode): WasmNode =
             newBinaryOp(
               ibAdd32,
               newGet(woGetLocal, 0),
-              newConst(n[0].typ.getSize.alignTo4.int32)
+              newConst(w.config.getSize(n[0].typ).alignTo4.int32)
             )
           ),
           loopBody
@@ -463,29 +463,29 @@ proc callMagic(w: WasmGen, s: PSym, n: PNode): WasmNode =
 
   of mDotDot:
     let t = n[1].typ.skipTypes(abstractVarRange)
-    if n.sonsLen > 2:
+    if n.len > 2:
       result = newOpList(
         newStore(
-          t.mapStoreKind,
+          w.config.mapStoreKind(t),
           w.gen(n[1]), 0'i32, newConst(w.nextMemIdx.int32)
         ),
         newStore(
-          t.mapStoreKind,
-          w.gen(n[2]), 0'i32, newConst((w.nextMemIdx+t.getSize.alignTo4).int32)
+          w.config.mapStoreKind(t),
+          w.gen(n[2]), 0'i32, newConst((w.nextMemIdx+w.config.getSize(t).alignTo4).int32)
         ),
-        newLoad(t.mapLoadKind, 0, 1, newConst(w.nextMemIdx.int32))  # FIXME: this shouldn't be necessary
+        newLoad(w.config.mapLoadKind(t), 0, 1, newConst(w.nextMemIdx.int32))  # FIXME: this shouldn't be necessary
                                                                     # basically, load and store in itself       
       )
     else:
       result = newOpList(
         newStore(
-          t.mapStoreKind,
-          w.gen(n[1]), 0'i32, newConst((w.nextMemIdx+t.getSize.alignTo4).int32)
+          w.config.mapStoreKind(t),
+          w.gen(n[1]), 0'i32, newConst((w.nextMemIdx+w.config.getSize(t).alignTo4).int32)
         ),
-        newLoad(t.mapLoadKind, 0, 1, newConst(w.nextMemIdx.int32))
+        newLoad(w.config.mapLoadKind(t), 0, 1, newConst(w.nextMemIdx.int32))
       )
   of mSizeOf:
-    result = newConst(n[1].typ.getSize.alignTo4.int32)
+    result = newConst(w.config.getSize(n[1].typ).alignTo4.int32)
   of mInc, mDec:
     result = newOpList(
       newStore(
@@ -518,7 +518,7 @@ proc callMagic(w: WasmGen, s: PSym, n: PNode): WasmNode =
             newAdd32(
               newConst(wasmPtrSize.int32),
               newMul32(
-                newConst(n[1].sym.typ.lastSon.getSize.alignTo4.int32),
+                newConst(w.config.getSize(n[1].sym.typ.lastSon).alignTo4.int32),
                 newGet(woGetLocal, 1)
               )
             )
@@ -529,7 +529,7 @@ proc callMagic(w: WasmGen, s: PSym, n: PNode): WasmNode =
       
       w.m.functions.add(
         newFunction(
-          w.nextFuncIdx, newType(vtNone, vtI32, vtI32), magicbody, nil, s.mangleName,
+          w.nextFuncIdx, newType(vtNone, vtI32, vtI32), magicbody, @[], s.mangleName,
           s.flags.contains(sfExported)
         )
       )
@@ -540,20 +540,20 @@ proc callMagic(w: WasmGen, s: PSym, n: PNode): WasmNode =
     # I don't like special casing here.
     if n[1].kind == nkSym and n[1].sym.offset>0:
       result = newCall(w.generatedProcs[s.mangleName].id, 
-        newLoad(memLOadI32, 0,1, w.genSymLoc(n[1].sym)), 
+        newLoad(memLoadI32, 0,1, w.genSymLoc(n[1].sym)), 
         w.gen(n[2]), false
       )
     else:
       result = newCall(w.generatedProcs[s.mangleName].id, 
-        newLoad(memLOadI32, 0,1, newConst(heapPtrLoc)), # this is not really ideal, it works because we assume
+        newLoad(memLoadI32, 0,1, newConst(heapPtrLoc)), # this is not really ideal, it works because we assume
                                                         # newseq(len):res and so result is at local #1
         w.gen(n[2]), false
       )
     
   of mNewSeqOfCap:
     echo "# mNewSeqOfCap"
-    echo treeToYaml n
-    internalError("# TODO: mNewSeqOfCap")
+    echo w.config.treeToYaml(n)
+    w.config.internalError("# TODO: mNewSeqOfCap")
     # we receive the len of the block to reserve.
     # Since this proc is completely a magic, we can do everything here.
     # remember to return the pointer you initially got
@@ -566,7 +566,7 @@ proc callMagic(w: WasmGen, s: PSym, n: PNode): WasmNode =
           newAdd32(
             newConst(wasmPtrSize.int32),
             newMul32(
-              newConst(n.typ.getSize.alignTo4.int32),
+              newConst(w.config.getSize(n.typ).alignTo4.int32),
               w.gen(n[1])
             )
           )
@@ -579,8 +579,8 @@ proc callMagic(w: WasmGen, s: PSym, n: PNode): WasmNode =
   of mChr:
     result = w.gen(n[1][0]) # skip nkChckRange for now... FIXME:
   else: 
-    echo treeToYaml n
-    internalError("# callMagic unhandled magic: " & $s.magic)
+    echo w.config.treeToYaml(n)
+    w.config.internalError("# callMagic unhandled magic: " & $s.magic)
 
 proc genAsgn(w: WasmGen, lhsNode, rhsNode: PNode): WasmNode =
   var 
@@ -796,9 +796,9 @@ proc gen(w: WasmGen, n: PNode): WasmNode =
         elif s.owner.kind == skProc:
           result.sons.add(w.store(typ, iddef[2], w.nextMemIdx))
         else:
-          internalError("# genIdentDefs error: " & $n[namePos].kind)
+          w.config.internalError("# genIdentDefs error: " & $n[namePos].kind)
       else:
-        internalError("# genIdentDefs loop error: " & $n[namePos].kind)
+        w.config.internalError("# genIdentDefs loop error: " & $n[namePos].kind)
   of nkDerefExpr, nkHiddenDeref:
     #echo treeToYaml n
     var loadKind : WasmOpKind = memLoadI32
@@ -836,46 +836,46 @@ proc gen(w: WasmGen, n: PNode): WasmNode =
         newBinaryOp(ibAdd32, newLoad(memLoadI32, 0, 1, w.genSymLoc(n[0][0].sym)), newConst(n[1].sym.offset))
       )
     else:
-      internalError("nkDotExpr n[0] kind: " & $n[0].kind) 
+      w.config.internalError("nkDotExpr n[0] kind: " & $n[0].kind) 
   of nkAsgn:
     result = w.genAsgn(n[0], n[1])
   of nkHiddenStdConv, nkConv:
     #echo "nkHiddenStdConv for " & $n.typ.kind
     var convOP: WasmOpKind
-    case n[1].typ.mapType:
+    case w.config.mapType(n[1].typ):
     of vtI32:
-      case n.typ.mapType:
-      of vtI32: convOp = woNop
-      of vtF32: convOp = cvConvertF32S_I32
-      of vtF64: convOp = cvConvertF64S_I32
-      of vtI64: convOp = cvExtendI64S_I32
-      else: internalError("#nkHiddenStdConv")
+      case w.config.mapType(n.typ):
+      of vtI32: convOP = woNop
+      of vtF32: convOP = cvConvertF32S_I32
+      of vtF64: convOP = cvConvertF64S_I32
+      of vtI64: convOP = cvExtendI64S_I32
+      else: w.config.internalError("#nkHiddenStdConv")
     of vtF32:
-      case n.typ.mapType:
-      of vtI32: convOp = cvTruncI32S_F32
-      of vtF32: convOp = woNop
-      of vtF64: convOp = cvPromoteF64_F32
-      of vtI64: convOp = cvTruncI64S_F32
-      else: internalError("#nkHiddenStdConv")
+      case w.config.mapType(n.typ):
+      of vtI32: convOP = cvTruncI32S_F32
+      of vtF32: convOP = woNop
+      of vtF64: convOP = cvPromoteF64_F32
+      of vtI64: convOP = cvTruncI64S_F32
+      else: w.config.internalError("#nkHiddenStdConv")
     of vtF64:
-      case n.typ.mapType:
-      of vtI32: convOp = cvTruncI32S_F64
-      of vtF32: convOp = cvDemoteF32_F64
-      of vtF64: convOp = woNop
-      of vtI64: convOp = cvTruncI64S_F64
-      else: internalError("#nkHiddenStdConv")
+      case w.config.mapType(n.typ):
+      of vtI32: convOP = cvTruncI32S_F64
+      of vtF32: convOP = cvDemoteF32_F64
+      of vtF64: convOP = woNop
+      of vtI64: convOP = cvTruncI64S_F64
+      else: w.config.internalError("#nkHiddenStdConv")
     of vtI64:
-      case n.typ.mapType:
-      of vtI32: convOp = cvWrapI32_I64
-      of vtF32: convOp = cvConvertF32S_I64
-      of vtF64: convOp = cvConvertF64S_I64
-      of vtI64: convOp = woNop
-      else: internalError("#nkHiddenStdConv")
-    else: internalError("#nkHiddenStdConv")
-    if convOp == woNop:
+      case w.config.mapType(n.typ):
+      of vtI32: convOP = cvWrapI32_I64
+      of vtF32: convOP = cvConvertF32S_I64
+      of vtF64: convOP = cvConvertF64S_I64
+      of vtI64: convOP = woNop
+      else: w.config.internalError("#nkHiddenStdConv")
+    else: w.config.internalError("#nkHiddenStdConv")
+    if convOP == woNop:
       result = w.gen(n[1]) 
     else:
-      result = newUnaryOp(convOp, w.gen(n[1]))
+      result = newUnaryOp(convOP, w.gen(n[1]))
   of nkBlockStmt:
     result = w.gen(n[1])
   of nkWhileStmt:
@@ -883,9 +883,9 @@ proc gen(w: WasmGen, n: PNode): WasmNode =
   of nkIfStmt:
     #echo "nkIfstmt",treeToYaml n
     # ifstmt are recursive for now
-    result = newWaNode(woNop)
+    result = newWANode(woNop)
     
-    for bidx in countdown(n.sonsLen-1,0):
+    for bidx in countdown(n.len-1,0):
       #result = gen else1
       #result2 = gen if1 else result1
       #result3 = gen if2 else result2
@@ -895,10 +895,10 @@ proc gen(w: WasmGen, n: PNode): WasmNode =
         result = newIfElse(w.gen(n[bidx][0]),w.gen(n[bidx][1]), result)
   of nkDiscardStmt:
     if n.sons[0].kind != nkEmpty:
-      internalError("TODO: evaluate discarded statement")
+      w.config.internalError("TODO: evaluate discarded statement")
   else:
     #echo $n.kind
-    internalError("missing gen case: " & $n.kind)
+    w.config.internalError("missing gen case: " & $n.kind)
 #-------------putHeapPtr-------------------------------#
 proc putHeapPtr(w:WasmGen) =
   w.m.data.add(

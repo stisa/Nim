@@ -174,9 +174,9 @@ proc commandCompileToWasm(graph:ModuleGraph) =
   defineSymbol(graph.config.symbols,"wasm")
   undefSymbol(graph.config.symbols,"js") # don't know why this is defined...
   semanticPasses(graph)
-  registerPass(graph, WAsmGenPass)
+  registerPass(graph, WasmGenPass)
   # this should bypass system...
-  graph.config.m.systemFileIdx = fileInfoIdx(graph.config, graph.config.libpath/"system"/"wasmsys.nim")
+  graph.config.m.systemFileIdx = fileInfoIdx(graph.config, graph.config.libpath / RelativeDir"system" / RelativeFile"wasmsys.nim")
   discard graph.compileModule(graph.config.m.systemFileIdx, {sfSystemModule})  
   compileProject(graph)
 
@@ -229,7 +229,7 @@ proc mainCommand*(graph: ModuleGraph) =
       commandCompileToJS(graph)
   of "wasm":
     conf.cmd = cmdCompileToWasm
-    loadConfigs(WasmGlue, cache)
+    loadConfigs(WasmGlue, cache, graph.config)
     commandCompileToWasm(graph)
   of "doc0":
     when defined(leanCompiler):
