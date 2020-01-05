@@ -10,7 +10,7 @@
 # Built-in types and compilerprocs are registered here.
 
 import
-  ast, astalgo, hashes, msgs, platform, nversion, times, idents,
+  ast, astalgo, msgs, platform, idents,
   modulegraphs, lineinfos
 
 export createMagic
@@ -40,7 +40,7 @@ proc getSysMagic*(g: ModuleGraph; info: TLineInfo; name: string, m: TMagic): PSy
   while r != nil:
     if r.magic == m:
       # prefer the tyInt variant:
-      if r.typ.sons[0] != nil and r.typ.sons[0].kind == tyInt: return r
+      if r.typ[0] != nil and r.typ[0].kind == tyInt: return r
       result = r
     r = nextIdentIter(ti, g.systemModule.tab)
   if result != nil: return result
@@ -120,9 +120,10 @@ proc skipIntLit*(t: PType): PType {.inline.} =
     result = t
 
 proc addSonSkipIntLit*(father, son: PType) =
-  if isNil(father.sons): father.sons = @[]
+  when not defined(nimNoNilSeqs):
+    if isNil(father.sons): father.sons = @[]
   let s = son.skipIntLit
-  add(father.sons, s)
+  father.sons.add(s)
   propagateToOwner(father, s)
 
 proc setIntLitType*(g: ModuleGraph; result: PNode) =

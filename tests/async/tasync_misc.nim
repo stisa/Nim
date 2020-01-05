@@ -37,11 +37,20 @@ block: #8399
       case line[0]
       of '+', '-': @[]
       of '$': (let x = await bar(); @[""])
-      else:
-        nil
+      else: @[]
 
     doAssert(res == @[""])
 
   waitFor foo("$asd")
+
+block: # nkCheckedFieldExpr
+  proc bar(): Future[JsonNode] {.async.} =
+    return newJInt(5)
+
+  proc foo() {.async.} =
+    let n = 10 + (await bar()).num
+    doAssert(n == 15)
+
+  waitFor foo()
 
 echo "ok"

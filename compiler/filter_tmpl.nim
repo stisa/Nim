@@ -10,8 +10,8 @@
 # This module implements Nim's standard template filter.
 
 import
-  llstream, os, wordrecg, idents, strutils, ast, astalgo, msgs, options,
-  renderer, filters, lineinfos
+  llstream, strutils, ast, msgs, options,
+  filters, lineinfos, pathutils
 
 type
   TParseState = enum
@@ -22,7 +22,7 @@ type
     info: TLineInfo
     indent, emitPar: int
     x: string                # the current input line
-    outp: PLLStream          # the ouput will be parsed by pnimsyn
+    outp: PLLStream          # the output will be parsed by pnimsyn
     subsChar, nimDirective: char
     emit, conc, toStr: string
     curly, bracket, par: int
@@ -75,7 +75,7 @@ proc parseLine(p: var TTmplParser) =
     let d = j
     var keyw = ""
     while j < len and p.x[j] in PatternChars:
-      add(keyw, p.x[j])
+      keyw.add(p.x[j])
       inc(j)
 
     scanPar(p, j)
@@ -199,7 +199,8 @@ proc parseLine(p: var TTmplParser) =
           inc(j)
     llStreamWrite(p.outp, "\\n\"")
 
-proc filterTmpl*(stdin: PLLStream, filename: string, call: PNode; conf: ConfigRef): PLLStream =
+proc filterTmpl*(stdin: PLLStream, filename: AbsoluteFile,
+                 call: PNode; conf: ConfigRef): PLLStream =
   var p: TTmplParser
   p.config = conf
   p.info = newLineInfo(conf, filename, 0, 0)

@@ -10,9 +10,9 @@
 ## Implements some helper procs for Nimble (Nim's package manager) support.
 
 import parseutils, strutils, strtabs, os, options, msgs, sequtils,
-  lineinfos
+  lineinfos, pathutils
 
-proc addPath*(conf: ConfigRef; path: string, info: TLineInfo) =
+proc addPath*(conf: ConfigRef; path: AbsoluteDir, info: TLineInfo) =
   if not conf.searchPaths.contains(path):
     conf.searchPaths.insert(path, 0)
 
@@ -48,7 +48,7 @@ proc `<`*(ver: Version, ver2: Version): bool =
   # Handling for normal versions such as "0.1.0" or "1.0".
   var sVer = string(ver).split('.')
   var sVer2 = string(ver2).split('.')
-  for i in 0..max(sVer.len, sVer2.len)-1:
+  for i in 0..<max(sVer.len, sVer2.len):
     var sVerI = 0
     if i < sVer.len:
       discard parseInt(sVer[i], sVerI)
@@ -69,9 +69,10 @@ proc getPathVersion*(p: string): tuple[name, version: string] =
   result.version = ""
 
   const specialSeparator = "-#"
-  var sepIdx = p.find(specialSeparator)
+  let last = p.rfind(p.lastPathPart) # the index where the last path part begins
+  var sepIdx = p.find(specialSeparator, start = last)
   if sepIdx == -1:
-    sepIdx = p.rfind('-')
+    sepIdx = p.rfind('-', start = last)
 
   if sepIdx == -1:
     result.name = p
@@ -82,7 +83,7 @@ proc getPathVersion*(p: string): tuple[name, version: string] =
       result.name = p
       return
 
-  result.name = p[0 .. sepIdx - 1]
+  result.name = p[0..sepIdx - 1]
   result.version = p.substr(sepIdx + 1)
 
 proc addPackage(conf: ConfigRef; packages: StringTableRef, p: string; info: TLineInfo) =
@@ -112,9 +113,9 @@ proc addNimblePath(conf: ConfigRef; p: string, info: TLineInfo) =
     if not path.isAbsolute():
       path = p / path
 
-  if not contains(conf.searchPaths, path):
+  if not contains(conf.searchPaths, AbsoluteDir path):
     message(conf, info, hintPath, path)
-    conf.lazyPaths.insert(path, 0)
+    conf.lazyPaths.insert(AbsoluteDir path, 0)
 
 proc addPathRec(conf: ConfigRef; dir: string, info: TLineInfo) =
   var packages = newStringTable(modeStyleInsensitive)
@@ -126,9 +127,13 @@ proc addPathRec(conf: ConfigRef; dir: string, info: TLineInfo) =
   for p in packages.chosen:
     addNimblePath(conf, p, info)
 
-proc nimblePath*(conf: ConfigRef; path: string, info: TLineInfo) =
-  addPathRec(conf, path, info)
-  addNimblePath(conf, path, info)
+proc nimblePath*(conf: ConfigRef; path: AbsoluteDir, info: TLineInfo) =
+  addPathRec(conf, path.string, info)
+  addNimblePath(conf, path.string, info)
+  let i = conf.nimblePaths.find(path)
+  if i != -1:
+    conf.nimblePaths.delete(i)
+  conf.nimblePaths.insert(path, 0)
 
 when isMainModule:
   proc v(s: string): Version = s.newVersion
@@ -140,18 +145,19 @@ when isMainModule:
   doAssert v"#aaaqwe" < v"1.1" # We cannot assume that a branch is newer.
   doAssert v"#a111" < v"#head"
 
+  let conf = newConfigRef()
   var rr = newStringTable()
-  addPackage rr, "irc-#a111"
-  addPackage rr, "irc-#head"
-  addPackage rr, "irc-0.1.0"
-  addPackage rr, "irc"
-  addPackage rr, "another"
-  addPackage rr, "another-0.1"
+  addPackage conf, rr, "irc-#a111", unknownLineInfo()
+  addPackage conf, rr, "irc-#head", unknownLineInfo()
+  addPackage conf, rr, "irc-0.1.0", unknownLineInfo()
+  #addPackage conf, rr, "irc", unknownLineInfo()
+  #addPackage conf, rr, "another", unknownLineInfo()
+  addPackage conf, rr, "another-0.1", unknownLineInfo()
 
-  addPackage rr, "ab-0.1.3"
-  addPackage rr, "ab-0.1"
-  addPackage rr, "justone"
+  addPackage conf, rr, "ab-0.1.3", unknownLineInfo()
+  addPackage conf, rr, "ab-0.1", unknownLineInfo()
+  addPackage conf, rr, "justone-1.0", unknownLineInfo()
 
   doAssert toSeq(rr.chosen) ==
-    @["irc-#head", "another-0.1", "ab-0.1.3", "justone"]
+    @["irc-#head", "another-0.1", "ab-0.1.3", "justone-1.0"]
 

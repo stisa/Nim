@@ -14,9 +14,9 @@ import times, nativesockets
 when defined(windows):
   import winlean
   when defined(gcc):
-    {.passL: "-lws2_32".}
+    {.passl: "-lws2_32".}
   elif defined(vcc):
-    {.passL: "ws2_32.lib".}
+    {.passl: "ws2_32.lib".}
   const platformHeaders = """#include <winsock2.h>
                              #include <windows.h>"""
   const EAGAIN = WSAEWOULDBLOCK
@@ -286,7 +286,7 @@ proc unregister*[T](s: Selector[T], fd: SocketHandle|int) =
   s.withSelectLock():
     let fd = fd.SocketHandle
     var pkey = s.getKey(fd)
-    if Event.Read in pkey.events:
+    if Event.Read in pkey.events or Event.User in pkey.events:
       IOFD_CLR(fd, addr s.rSet)
       dec(s.count)
     if Event.Write in pkey.events:
@@ -309,8 +309,13 @@ proc selectInto*[T](s: Selector[T], timeout: int,
   var ptv = addr tv
   var rset, wset, eset: FdSet
 
+  verifySelectParams(timeout)
+
   if timeout != -1:
-    tv.tv_sec = timeout.int32 div 1_000
+    when defined(genode):
+      tv.tv_sec = Time(timeout div 1_000)
+    else:
+      tv.tv_sec = timeout.int32 div 1_000
     tv.tv_usec = (timeout.int32 %% 1_000) * 1_000
   else:
     ptv = nil
@@ -391,7 +396,6 @@ proc contains*[T](s: Selector[T], fd: SocketHandle|int): bool {.inline.} =
     for i in 0..<FD_SETSIZE:
       if s.fds[i].ident == fdi:
         return true
-      inc(i)
 
 when hasThreadSupport:
   template withSelectLock[T](s: Selector[T], body: untyped) =
