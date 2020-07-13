@@ -154,8 +154,8 @@ type
                     # is their finally. For finally it is parent finally. Otherwise -1
 
 const
-  nkSkip = { nkEmpty..nkNilLit, nkTemplateDef, nkTypeSection, nkStaticStmt,
-            nkCommentStmt } + procDefs
+  nkSkip = {nkEmpty..nkNilLit, nkTemplateDef, nkTypeSection, nkStaticStmt,
+            nkCommentStmt} + procDefs
 
 proc newStateAccess(ctx: var Ctx): PNode =
   if ctx.stateVarSym.isNil:
@@ -388,6 +388,10 @@ proc hasYieldsInExpressions(n: PNode): bool =
           return true
     else:
       result = n.hasYields
+  of nkCast:
+    for i in 1..<n.len:
+      if n[i].hasYieldsInExpressions:
+        return true
   else:
     for c in n:
       if c.hasYieldsInExpressions:
@@ -686,7 +690,7 @@ proc lowerStmtListExprs(ctx: var Ctx, n: PNode, needsSplit: var bool): PNode =
   of nkCast, nkHiddenStdConv, nkHiddenSubConv, nkConv, nkObjDownConv,
       nkDerefExpr, nkHiddenDeref:
     var ns = false
-    for i in 0..<n.len:
+    for i in ord(n.kind == nkCast)..<n.len:
       n[i] = ctx.lowerStmtListExprs(n[i], ns)
 
     if ns:
@@ -778,7 +782,7 @@ proc lowerStmtListExprs(ctx: var Ctx, n: PNode, needsSplit: var bool): PNode =
       result = newNodeI(nkStmtListExpr, n.info)
       result.typ = n.typ
       let (st, ex) = exprToStmtList(n[1])
-      n.kind = nkBlockStmt
+      n.transitionSonsKind(nkBlockStmt)
       n.typ = nil
       n[1] = st
       result.add(n)

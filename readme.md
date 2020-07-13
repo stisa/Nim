@@ -1,4 +1,6 @@
-# <img src="https://raw.githubusercontent.com/nim-lang/assets/master/Art/logo-crown.png" height="28px"/> Nim [![Build Status][badge-nim-travisci]][nim-travisci] [![builds.sr.ht freebsd status](https://builds.sr.ht/~araq/nim/freebsd.yml.svg)](https://builds.sr.ht/~araq/nim/freebsd.yml?)
+# <img src="https://raw.githubusercontent.com/nim-lang/assets/master/Art/logo-crown.png" height="28px"/> Nim
+
+[![Build Status](https://dev.azure.com/nim-lang/Nim/_apis/build/status/nim-lang.Nim?branchName=devel)](https://dev.azure.com/nim-lang/Nim/_build/latest?definitionId=1&branchName=devel)
 
 This repository contains the Nim compiler, Nim's stdlib, tools and documentation.
 For more information about Nim, including downloads and documentation for
@@ -77,6 +79,8 @@ Next run the appropriate build shell script for your platform:
 Finally, once you have finished the build steps (on Windows, Mac or Linux) you
 should add the ``bin`` directory to your PATH.
 
+See also [rebuilding the compiler](doc/intern.rst#rebuilding-the-compiler).
+
 ## Koch
 
 ``koch`` is the build tool used to build various parts of Nim and to generate
@@ -134,7 +138,7 @@ you should familiarize yourself with the following repository structure:
 If you are not familiar with making a pull request using GitHub and/or git, please
 read [this guide][pull-request-instructions].
 
-Ideally you should make sure that all tests pass before submitting a pull request.
+Ideally, you should make sure that all tests pass before submitting a pull request.
 However, if you are short on time, you can just run the tests specific to your
 changes by only running the corresponding categories of tests. Travis CI verifies
 that all tests pass before allowing the pull request to be accepted, so only
@@ -142,7 +146,7 @@ running specific tests should be harmless.
 Integration tests should go in ``tests/untestable``.
 
 If you're looking for ways to contribute, please look at our [issue tracker][nim-issues].
-There are always plenty of issues labelled [``Easy``][nim-issues-easy]; these should
+There are always plenty of issues labeled [``Easy``][nim-issues-easy]; these should
 be a good starting point for an initial contribution to Nim.
 
 You can also help with the development of Nim by making donations. Donations can be
@@ -188,14 +192,13 @@ Nim. You are explicitly permitted to develop commercial applications using Nim.
 
 Please read the [copying.txt](copying.txt) file for more details.
 
-Copyright © 2006-2019 Andreas Rumpf, all rights reserved.
+Copyright © 2006-2020 Andreas Rumpf, all rights reserved.
 
 [nim-site]: https://nim-lang.org
 [nim-forum]: https://forum.nim-lang.org
 [nim-issues]: https://github.com/nim-lang/Nim/issues
 [nim-issues-easy]: https://github.com/nim-lang/Nim/labels/Easy
 [nim-irc]: https://webchat.freenode.net/?channels=nim
-[nim-travisci]: https://travis-ci.org/nim-lang/Nim
 [nim-twitter]: https://twitter.com/nim_lang
 [nim-stackoverflow]: https://stackoverflow.com/questions/tagged/nim-lang
 [nim-stackoverflow-newest]: https://stackoverflow.com/questions/tagged/nim-lang?sort=newest&pageSize=15

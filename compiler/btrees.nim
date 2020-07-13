@@ -79,6 +79,9 @@ proc insert[Key, Val](h: Node[Key, Val], key: Key, val: Val): Node[Key, Val] =
   var j = 0
   if not h.isInternal:
     while j < h.entries:
+      if eq(key, h.keys[j]):
+        h.vals[j] = val
+        return
       if less(key, h.keys[j]): break
       inc j
     for i in countdown(h.entries, j+1):
@@ -191,7 +194,7 @@ when isMainModule:
     st.add("www.yahoo.com",        "216.109.118.65")
 
     assert st.getOrDefault("www.cs.princeton.edu") == "abc"
-    assert st.getOrDefault("www.harvardsucks.com") == nil
+    assert st.getOrDefault("www.harvardsucks.com") == ""
 
     assert st.getOrDefault("www.simpsons.com") == "209.052.165.60"
     assert st.getOrDefault("www.apple.com") == "17.112.152.32"

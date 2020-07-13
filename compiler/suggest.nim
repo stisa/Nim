@@ -106,11 +106,15 @@ proc getTokenLenFromSource(conf: ConfigRef; ident: string; info: TLineInfo): int
     if cmpIgnoreStyle(line[column..column + result - 1], ident) != 0:
       result = 0
   else:
-    result = skipWhile(line, OpChars + {'[', '(', '{', ']', ')', '}'}, column)
+    var sourceIdent: string
+    result = parseWhile(line, sourceIdent,
+                        OpChars + {'[', '(', '{', ']', ')', '}'}, column)
     if ident[^1] == '=' and ident[0] in linter.Letters:
-      if line[column..column + result - 1] != "=":
+      if sourceIdent != "=":
         result = 0
-    elif line[column..column + result - 1] != ident:
+    elif sourceIdent.len > ident.len and sourceIdent[..ident.high] == ident:
+      result = ident.len
+    elif sourceIdent != ident:
       result = 0
 
 proc symToSuggest(conf: ConfigRef; s: PSym, isLocal: bool, section: IdeCmd, info: TLineInfo;
@@ -497,17 +501,16 @@ proc suggestSym*(conf: ConfigRef; info: TLineInfo; s: PSym; usageSym: var PSym; 
 proc extractPragma(s: PSym): PNode =
   if s.kind in routineKinds:
     result = s.ast[pragmasPos]
-  elif s.kind in {skType, skVar, skLet} and s.ast[0].kind == nkPragmaExpr:
-    # s.ast = nkTypedef / nkPragmaExpr / [nkSym, nkPragma]
-    result = s.ast[0][1]
+  elif s.kind in {skType, skVar, skLet}:
+    if s.ast != nil and s.ast.len > 0:
+      if s.ast[0].kind == nkPragmaExpr and s.ast[0].len > 1:
+        # s.ast = nkTypedef / nkPragmaExpr / [nkSym, nkPragma]
+        result = s.ast[0][1]
   doAssert result == nil or result.kind == nkPragma
 
 proc warnAboutDeprecated(conf: ConfigRef; info: TLineInfo; s: PSym) =
   var pragmaNode: PNode
-  if optOldAst in conf.options and s.kind in {skVar, skLet}:
-    pragmaNode = nil
-  else:
-    pragmaNode = if s.kind == skEnumField: extractPragma(s.owner) else: extractPragma(s)
+  pragmaNode = if s.kind == skEnumField: extractPragma(s.owner) else: extractPragma(s)
   let name =
     if s.kind == skEnumField and sfDeprecated notin s.flags: "enum '" & s.owner.name.s & "' which contains field '" & s.name.s & "'"
     else: s.name.s
@@ -521,14 +524,16 @@ proc warnAboutDeprecated(conf: ConfigRef; info: TLineInfo; s: PSym) =
 
 proc userError(conf: ConfigRef; info: TLineInfo; s: PSym) =
   let pragmaNode = extractPragma(s)
-
+  template bail(prefix: string) =
+    localError(conf, info, "$1usage of '$2' is an {.error.} defined at $3" %
+      [prefix, s.name.s, toFileLineCol(conf, s.ast.info)])
   if pragmaNode != nil:
     for it in pragmaNode:
       if whichPragma(it) == wError and it.safeLen == 2 and
           it[1].kind in {nkStrLit..nkTripleStrLit}:
-        localError(conf, info, it[1].strVal & "; usage of '$1' is a user-defined error" % s.name.s)
+        bail(it[1].strVal & "; ")
         return
-  localError(conf, info, "usage of '$1' is a user-defined error" % s.name.s)
+  bail("")
 
 proc markOwnerModuleAsUsed(c: PContext; s: PSym) =
   var module = s
@@ -552,7 +557,12 @@ proc markUsed(c: PContext; info: TLineInfo; s: PSym) =
     if sfDeprecated in s.owner.flags:
       warnAboutDeprecated(conf, info, s)
   if {sfDeprecated, sfError} * s.flags != {}:
-    if sfDeprecated in s.flags: warnAboutDeprecated(conf, info, s)
+    if sfDeprecated in s.flags:
+      if not (c.lastTLineInfo.line == info.line and 
+              c.lastTLineInfo.col == info.col):
+        warnAboutDeprecated(conf, info, s)
+        c.lastTLineInfo = info
+
     if sfError in s.flags: userError(conf, info, s)
   when defined(nimsuggest):
     suggestSym(conf, info, s, c.graph.usageSym, false)
