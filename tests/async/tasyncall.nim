@@ -1,8 +1,7 @@
 discard """
-  file: "tasyncall.nim"
   exitcode: 0
 """
-import times, sequtils, unittest
+import times, sequtils
 import asyncdispatch
 
 const
@@ -40,8 +39,17 @@ proc testVarargs(x, y, z: int): seq[int] =
 
   result = waitFor all(a, b, c)
 
-suite "tasyncall":
-  test "testFuturesWithValue":
+proc testWithDupes() =
+  var
+    tasks = newSeq[Future[void]](taskCount)
+    fut = futureWithoutValue()
+
+  for i in 0..<taskCount:
+    tasks[i] = fut
+
+  waitFor all(tasks)
+
+block:
     let
       startTime = cpuTime()
       results = testFuturesWithValue(42)
@@ -51,14 +59,21 @@ suite "tasyncall":
     doAssert execTime * 1000 < taskCount * sleepDuration
     doAssert results == expected
 
-  test "testFuturesWithoutValues":
+block:
     let startTime = cpuTime()
     testFuturesWithoutValues()
     let execTime = cpuTime() - startTime
 
     doAssert execTime * 1000 < taskCount * sleepDuration
 
-  test "testVarargs":
+block:
+    let startTime = cpuTime()
+    testWithDupes()
+    let execTime = cpuTime() - startTime
+
+    doAssert execTime * 1000 < taskCount * sleepDuration
+
+block:
     let
       startTime = cpuTime()
       results = testVarargs(1, 2, 3)
@@ -68,7 +83,7 @@ suite "tasyncall":
     doAssert execTime * 100 < taskCount * sleepDuration
     doAssert results == expected
 
-  test "all on seq[Future]":
+block:
     let
       noIntFuturesFut = all(newSeq[Future[int]]())
       noVoidFuturesFut = all(newSeq[Future[void]]())

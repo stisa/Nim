@@ -1,7 +1,7 @@
 discard """
-  cmd: "nim default $file"
+  cmd: "nim default --hint:cc:off --hint:cc $file"
   output: '''hello world! 0.5'''
-  msg: '''[NimScript] exec: gcc -v'''
+  nimout: '''[NimScript] exec: gcc -v'''
 """
 
 when not defined(definedefine):

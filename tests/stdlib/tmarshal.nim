@@ -1,11 +1,16 @@
 discard """
-  output: '''{"age": 12, "bio": "\u042F Cletus", "blob": [65, 66, 67, 128], "name": "Cletus"}
+  output: '''{"age": 12, "bio": "Я Cletus", "blob": [65, 66, 67, 128], "name": "Cletus"}
 true
 true
 alpha 100
 omega 200
 '''
+joinable: false
 """
+
+#[
+joinable: false pending https://github.com/nim-lang/Nim/issues/9754
+]#
 
 import marshal
 
@@ -105,3 +110,16 @@ r = to[Something](data2)
 
 echo r.x, " ", r.y
 
+
+type
+  Foo = object
+    a1: string
+    a2: string
+    a3: seq[string]
+    a4: seq[int]
+    a5: seq[int]
+    a6: seq[int]
+var foo = Foo(a2: "", a4: @[], a6: @[1])
+foo.a6.setLen 0
+doAssert $$foo == """{"a1": "", "a2": "", "a3": [], "a4": [], "a5": [], "a6": []}"""
+testit(foo)

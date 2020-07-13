@@ -10,9 +10,39 @@
 ## Source highlighter for programming or markup languages.
 ## Currently only few languages are supported, other languages may be added.
 ## The interface supports one language nested in another.
+##
+## **Note:** Import ``packages/docutils/highlite`` to use this module
+##
+## You can use this to build your own syntax highlighting, check this example:
+##
+## .. code::nim
+##   let code = """for x in $int.high: echo x.ord mod 2 == 0"""
+##   var toknizr: GeneralTokenizer
+##   initGeneralTokenizer(toknizr, code)
+##   while true:
+##     getNextToken(toknizr, langNim)
+##     case toknizr.kind
+##     of gtEof: break  # End Of File (or string)
+##     of gtWhitespace:
+##       echo gtWhitespace # Maybe you want "visible" whitespaces?.
+##       echo substr(code, toknizr.start, toknizr.length + toknizr.start - 1)
+##     of gtOperator:
+##       echo gtOperator # Maybe you want Operators to use a specific color?.
+##       echo substr(code, toknizr.start, toknizr.length + toknizr.start - 1)
+##     # of gtSomeSymbol: syntaxHighlight("Comic Sans", "bold", "99px", "pink")
+##     else:
+##       echo toknizr.kind # All the kinds of tokens can be processed here.
+##       echo substr(code, toknizr.start, toknizr.length + toknizr.start - 1)
+##
+## The proc ``getSourceLanguage`` can get the language ``enum`` from a string:
+##
+## .. code::nim
+##   for l in ["C", "c++", "jAvA", "Nim", "c#"]: echo getSourceLanguage(l)
+##
 
 import
   strutils
+from algorithm import binarySearch
 
 type
   TokenClass* = enum
@@ -31,14 +61,12 @@ type
     state: TokenClass
 
   SourceLanguage* = enum
-    langNone, langNim, langNimrod, langCpp, langCsharp, langC, langJava,
+    langNone, langNim, langCpp, langCsharp, langC, langJava,
     langYaml
-{.deprecated: [TSourceLanguage: SourceLanguage, TTokenClass: TokenClass,
-              TGeneralTokenizer: GeneralTokenizer].}
 
 const
   sourceLanguageToStr*: array[SourceLanguage, string] = ["none",
-    "Nim", "Nimrod", "C++", "C#", "C", "Java", "Yaml"]
+    "Nim", "C++", "C#", "C", "Java", "Yaml"]
   tokenClassToStr*: array[TokenClass, string] = ["Eof", "None", "Whitespace",
     "DecNumber", "BinNumber", "HexNumber", "OctNumber", "FloatNumber",
     "Identifier", "Keyword", "StringLit", "LongStringLit", "CharLit",
@@ -49,17 +77,17 @@ const
 
   # The following list comes from doc/keywords.txt, make sure it is
   # synchronized with this array by running the module itself as a test case.
-  nimKeywords = ["addr", "and", "as", "asm", "atomic", "bind", "block",
+  nimKeywords = ["addr", "and", "as", "asm", "bind", "block",
     "break", "case", "cast", "concept", "const", "continue", "converter",
     "defer", "discard", "distinct", "div", "do",
     "elif", "else", "end", "enum", "except", "export",
     "finally", "for", "from", "func",
-    "generic", "if", "import", "in", "include",
+    "if", "import", "in", "include",
     "interface", "is", "isnot", "iterator", "let", "macro", "method",
     "mixin", "mod", "nil", "not", "notin", "object", "of", "or", "out", "proc",
     "ptr", "raise", "ref", "return", "shl", "shr", "static",
-    "template", "try", "tuple", "type", "using", "var", "when", "while", "with",
-    "without", "xor", "yield"]
+    "template", "try", "tuple", "type", "using", "var", "when", "while",
+    "xor", "yield"]
 
 proc getSourceLanguage*(name: string): SourceLanguage =
   for i in countup(succ(low(SourceLanguage)), high(SourceLanguage)):
@@ -131,7 +159,7 @@ proc nimNumber(g: var GeneralTokenizer, position: int): int =
 
 const
   OpChars  = {'+', '-', '*', '/', '\\', '<', '>', '!', '?', '^', '.',
-              '|', '=', '%', '&', '$', '@', '~', ':', '\x80'..'\xFF'}
+              '|', '=', '%', '&', '$', '@', '~', ':'}
 
 proc nimNextToken(g: var GeneralTokenizer) =
   const
@@ -314,7 +342,7 @@ proc nimNextToken(g: var GeneralTokenizer) =
         inc(pos)
         g.kind = gtNone
   g.length = pos - g.pos
-  if g.kind != gtEof and g.length <= 0:
+  if g.kind != gtEof and g.state != gtNone and g.length <= 0:
     assert false, "nimNextToken: produced an empty token"
   g.pos = pos
 
@@ -367,38 +395,15 @@ proc generalStrLit(g: var GeneralTokenizer, position: int): int =
   result = pos
 
 proc isKeyword(x: openArray[string], y: string): int =
-  var a = 0
-  var b = len(x) - 1
-  while a <= b:
-    var mid = (a + b) div 2
-    var c = cmp(x[mid], y)
-    if c < 0:
-      a = mid + 1
-    elif c > 0:
-      b = mid - 1
-    else:
-      return mid
-  result = - 1
+  binarySearch(x, y)
 
 proc isKeywordIgnoreCase(x: openArray[string], y: string): int =
-  var a = 0
-  var b = len(x) - 1
-  while a <= b:
-    var mid = (a + b) div 2
-    var c = cmpIgnoreCase(x[mid], y)
-    if c < 0:
-      a = mid + 1
-    elif c > 0:
-      b = mid - 1
-    else:
-      return mid
-  result = - 1
+  binarySearch(x, y, cmpIgnoreCase)
 
 type
   TokenizerFlag = enum
     hasPreprocessor, hasNestedComments
   TokenizerFlags = set[TokenizerFlag]
-{.deprecated: [TTokenizerFlag: TokenizerFlag, TTokenizerFlags: TokenizerFlags].}
 
 proc clikeNextToken(g: var GeneralTokenizer, keywords: openArray[string],
                     flags: TokenizerFlags) =
@@ -860,7 +865,7 @@ proc yamlNextToken(g: var GeneralTokenizer) =
       inc(pos)
       while g.buf[pos] in {'0'..'9', '+', '-'}: inc(pos)
     of '0'..'9': yamlPossibleNumber(g, pos)
-    of '\0': g.kind = gtEOF
+    of '\0': g.kind = gtEof
     else: yamlPlainStrLit(g, pos)
   else:
     # outside document
@@ -878,7 +883,7 @@ proc yamlNextToken(g: var GeneralTokenizer) =
     of '#':
       g.kind = gtComment
       while g.buf[pos] notin {'\0', '\x0A', '\x0D'}: inc(pos)
-    of '\0': g.kind = gtEOF
+    of '\0': g.kind = gtEof
     else:
       g.kind = gtNone
       g.state = gtOther
@@ -888,7 +893,7 @@ proc yamlNextToken(g: var GeneralTokenizer) =
 proc getNextToken*(g: var GeneralTokenizer, lang: SourceLanguage) =
   case lang
   of langNone: assert false
-  of langNim, langNimrod: nimNextToken(g)
+  of langNim: nimNextToken(g)
   of langCpp: cppNextToken(g)
   of langCsharp: csharpNextToken(g)
   of langC: cNextToken(g)
@@ -901,12 +906,11 @@ when isMainModule:
   for filename in ["doc/keywords.txt", "../../../doc/keywords.txt"]:
     try:
       let input = string(readFile(filename))
-      keywords = input.split()
+      keywords = input.splitWhitespace()
       break
     except:
       echo filename, " not found"
-  doAssert(not keywords.isNil, "Couldn't read any keywords.txt file!")
-  doAssert keywords.len == nimKeywords.len, "No matching lengths"
-  for i in 0..keywords.len-1:
-    #echo keywords[i], " == ", nimKeywords[i]
+  doAssert(keywords.len > 0, "Couldn't read any keywords.txt file!")
+  for i in 0..min(keywords.len, nimKeywords.len)-1:
     doAssert keywords[i] == nimKeywords[i], "Unexpected keyword"
+  doAssert keywords.len == nimKeywords.len, "No matching lengths"

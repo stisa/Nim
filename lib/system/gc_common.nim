@@ -18,36 +18,80 @@ proc protect*(x: pointer): ForeignCell =
   result.owner = addr(gch)
 
 when defined(nimTypeNames):
-  proc dumpNumberOfInstances* =
+  type InstancesInfo = array[400, (cstring, int, int)]
+  proc sortInstances(a: var InstancesInfo; n: int) =
+    # we use shellsort here; fast and simple
+    var h = 1
+    while true:
+      h = 3 * h + 1
+      if h > n: break
+    while true:
+      h = h div 3
+      for i in countup(h, n - 1):
+        var v = a[i]
+        var j = i
+        while a[j - h][2] < v[2]:
+          a[j] = a[j - h]
+          j = j - h
+          if j < h: break
+        a[j] = v
+      if h == 1: break
+
+  iterator dumpHeapInstances*(): tuple[name: cstring; count: int; sizes: int] =
+    ## Iterate over summaries of types on heaps.
+    ## This data may be inaccurate if allocations
+    ## are made by the iterator body.
+    if strDesc.nextType == nil:
+      strDesc.nextType = nimTypeRoot
+      strDesc.name = "string"
+      nimTypeRoot = addr strDesc
     var it = nimTypeRoot
     while it != nil:
-      if it.instances > 0:
-        c_fprintf(stdout, "[Heap] %s: #%ld; bytes: %ld\n", it.name, it.instances, it.sizes)
+      if (it.instances > 0 or it.sizes != 0):
+        yield (it.name, it.instances, it.sizes)
       it = it.nextType
+
+  proc dumpNumberOfInstances* =
+    var a: InstancesInfo
+    var n = 0
+    var totalAllocated = 0
+    for it in dumpHeapInstances():
+      a[n] = it
+      inc n
+      inc totalAllocated, it.sizes
+    sortInstances(a, n)
+    for i in 0 .. n-1:
+      c_fprintf(cstdout, "[Heap] %s: #%ld; bytes: %ld\n", a[i][0], a[i][1], a[i][2])
+    c_fprintf(cstdout, "[Heap] total number of bytes: %ld\n", totalAllocated)
+    when defined(nimTypeNames):
+      let (allocs, deallocs) = getMemCounters()
+      c_fprintf(cstdout, "[Heap] allocs/deallocs: %ld/%ld\n", allocs, deallocs)
 
   when defined(nimGcRefLeak):
     proc oomhandler() =
-      c_fprintf(stdout, "[Heap] ROOTS: #%ld\n", gch.additionalRoots.len)
+      c_fprintf(cstdout, "[Heap] ROOTS: #%ld\n", gch.additionalRoots.len)
       writeLeaks()
 
     outOfMemHook = oomhandler
 
 template decTypeSize(cell, t) =
-  # XXX this needs to use atomics for multithreaded apps!
   when defined(nimTypeNames):
     if t.kind in {tyString, tySequence}:
-      let len = cast[PGenericSeq](cellToUsr(cell)).len
-      let base = if t.kind == tyString: 1 else: t.base.size
-      let size = addInt(mulInt(len, base), GenericSeqSize)
-      dec t.sizes, size+sizeof(Cell)
+      let cap = cast[PGenericSeq](cellToUsr(cell)).space
+      let size =
+        if t.kind == tyString:
+          cap + 1 + GenericSeqSize
+        else:
+          align(GenericSeqSize, t.base.align) + cap * t.base.size
+      atomicDec t.sizes, size+sizeof(Cell)
     else:
-      dec t.sizes, t.size+sizeof(Cell)
-    dec t.instances
+      atomicDec t.sizes, t.base.size+sizeof(Cell)
+    atomicDec t.instances
 
 template incTypeSize(typ, size) =
   when defined(nimTypeNames):
-    inc typ.instances
-    inc typ.sizes, size+sizeof(Cell)
+    atomicInc typ.instances
+    atomicInc typ.sizes, size+sizeof(Cell)
 
 proc dispose*(x: ForeignCell) =
   when hasThreadSupport:
@@ -115,15 +159,69 @@ else:
   iterator items(first: var GcStack): ptr GcStack = yield addr(first)
   proc len(stack: var GcStack): int = 1
 
+when defined(nimdoc):
+  proc setupForeignThreadGc*() {.gcsafe.} =
+    ## Call this if you registered a callback that will be run from a thread not
+    ## under your control. This has a cheap thread-local guard, so the GC for
+    ## this thread will only be initialized once per thread, no matter how often
+    ## it is called.
+    ##
+    ## This function is available only when ``--threads:on`` and ``--tlsEmulation:off``
+    ## switches are used
+    discard
+
+  proc tearDownForeignThreadGc*() {.gcsafe.} =
+    ## Call this to tear down the GC, previously initialized by ``setupForeignThreadGc``.
+    ## If GC has not been previously initialized, or has already been torn down, the
+    ## call does nothing.
+    ##
+    ## This function is available only when ``--threads:on`` and ``--tlsEmulation:off``
+    ## switches are used
+    discard
+elif declared(threadType):
+  proc setupForeignThreadGc*() {.gcsafe.} =
+    if threadType == ThreadType.None:
+      var stackTop {.volatile.}: pointer
+      nimGC_setStackBottom(addr(stackTop))
+      initGC()
+      threadType = ThreadType.ForeignThread
+
+  proc tearDownForeignThreadGc*() {.gcsafe.} =
+    if threadType != ThreadType.ForeignThread:
+      return
+    when declared(deallocOsPages): deallocOsPages()
+    threadType = ThreadType.None
+    when declared(gch): zeroMem(addr gch, sizeof(gch))
+
+else:
+  template setupForeignThreadGc*() =
+    {.error: "setupForeignThreadGc is available only when ``--threads:on`` and ``--tlsEmulation:off`` are used".}
+
+  template tearDownForeignThreadGc*() =
+    {.error: "tearDownForeignThreadGc is available only when ``--threads:on`` and ``--tlsEmulation:off`` are used".}
+
+# ----------------- stack management --------------------------------------
+#  inspired from Smart Eiffel
+
+when defined(emscripten) or defined(wasm):
+  const stackIncreases = true
+elif defined(sparc):
+  const stackIncreases = false
+elif defined(hppa) or defined(hp9000) or defined(hp9000s300) or
+     defined(hp9000s700) or defined(hp9000s800) or defined(hp9000s820):
+  const stackIncreases = true
+else:
+  const stackIncreases = false
+
 proc stackSize(stack: ptr GcStack): int {.noinline.} =
   when nimCoroutines:
     var pos = stack.pos
   else:
-    var pos {.volatile.}: pointer
+    var pos {.volatile, noinit.}: pointer
     pos = addr(pos)
 
   if pos != nil:
-    when defined(stackIncreases):
+    when stackIncreases:
       result = cast[ByteAddress](pos) -% cast[ByteAddress](stack.bottom)
     else:
       result = cast[ByteAddress](stack.bottom) -% cast[ByteAddress](pos)
@@ -131,6 +229,7 @@ proc stackSize(stack: ptr GcStack): int {.noinline.} =
     result = 0
 
 proc stackSize(): int {.noinline.} =
+  result = 0
   for stack in gch.stack.items():
     result = result + stack.stackSize()
 
@@ -155,68 +254,19 @@ else:
   proc getActiveStack(gch: var GcHeap): ptr GcStack = addr(gch.stack)
   proc isActiveStack(stack: ptr GcStack): bool = true
 
-when declared(threadType):
-  proc setupForeignThreadGc*() {.gcsafe.} =
-    ## Call this if you registered a callback that will be run from a thread not
-    ## under your control. This has a cheap thread-local guard, so the GC for
-    ## this thread will only be initialized once per thread, no matter how often
-    ## it is called.
-    ##
-    ## This function is available only when ``--threads:on`` and ``--tlsEmulation:off``
-    ## switches are used
-    if threadType == ThreadType.None:
-      initAllocator()
-      var stackTop {.volatile.}: pointer
-      setStackBottom(addr(stackTop))
-      initGC()
-      threadType = ThreadType.ForeignThread
-
-  proc tearDownForeignThreadGc*() {.gcsafe.} =
-    ## Call this to tear down the GC, previously initialized by ``setupForeignThreadGc``.
-    ## If GC has not been previously initialized, or has already been torn down, the
-    ## call does nothing.
-    ##
-    ## This function is available only when ``--threads:on`` and ``--tlsEmulation:off``
-    ## switches are used
-    if threadType != ThreadType.ForeignThread:
-      return
-    when declared(deallocOsPages): deallocOsPages()
-    threadType = ThreadType.None
-    when declared(gch): zeroMem(addr gch, sizeof(gch))
-
-else:
-  template setupForeignThreadGc*() =
-    {.error: "setupForeignThreadGc is available only when ``--threads:on`` and ``--tlsEmulation:off`` are used".}
-
-  template tearDownForeignThreadGc*() =
-    {.error: "tearDownForeignThreadGc is available only when ``--threads:on`` and ``--tlsEmulation:off`` are used".}
-
-# ----------------- stack management --------------------------------------
-#  inspired from Smart Eiffel
-
-when defined(emscripten):
-  const stackIncreases = true
-elif defined(sparc):
-  const stackIncreases = false
-elif defined(hppa) or defined(hp9000) or defined(hp9000s300) or
-     defined(hp9000s700) or defined(hp9000s800) or defined(hp9000s820):
-  const stackIncreases = true
-else:
-  const stackIncreases = false
-
 {.push stack_trace: off.}
 when nimCoroutines:
-  proc GC_addStack(bottom: pointer) {.cdecl, exportc.} =
+  proc GC_addStack(bottom: pointer) {.cdecl, dynlib, exportc.} =
     # c_fprintf(stdout, "GC_addStack: %p;\n", bottom)
     var stack = gch.stack.append()
     stack.bottom = bottom
     stack.setPosition(bottom)
 
-  proc GC_removeStack(bottom: pointer) {.cdecl, exportc.} =
+  proc GC_removeStack(bottom: pointer) {.cdecl, dynlib, exportc.} =
     # c_fprintf(stdout, "GC_removeStack: %p;\n", bottom)
     gch.stack.find(bottom).remove()
 
-  proc GC_setActiveStack(bottom: pointer) {.cdecl, exportc.} =
+  proc GC_setActiveStack(bottom: pointer) {.cdecl, dynlib, exportc.} =
     ## Sets active stack and updates current stack position.
     # c_fprintf(stdout, "GC_setActiveStack: %p;\n", bottom)
     var sp {.volatile.}: pointer
@@ -224,7 +274,7 @@ when nimCoroutines:
     gch.activeStack.setPosition(addr(sp))
 
 when not defined(useNimRtl):
-  proc setStackBottom(theStackBottom: pointer) =
+  proc nimGC_setStackBottom(theStackBottom: pointer) =
     # Initializes main stack of the thread.
     when nimCoroutines:
       if gch.stack.next == nil:
@@ -254,7 +304,7 @@ when not defined(useNimRtl):
 {.pop.}
 
 proc isOnStack(p: pointer): bool =
-  var stackTop {.volatile.}: pointer
+  var stackTop {.volatile, noinit.}: pointer
   stackTop = addr(stackTop)
   var a = cast[ByteAddress](gch.getActiveStack().bottom)
   var b = cast[ByteAddress](stackTop)
@@ -290,21 +340,28 @@ elif stackIncreases:
   # ---------------------------------------------------------------------------
   # Generic code for architectures where addresses increase as the stack grows.
   # ---------------------------------------------------------------------------
-  var
-    jmpbufSize {.importc: "sizeof(jmp_buf)", nodecl.}: int
-      # a little hack to get the size of a JmpBuf in the generated C code
-      # in a platform independent way
+  when defined(emscripten) or defined(wasm):
+    var
+      jmpbufSize {.importc: "sizeof(jmp_buf)", nodecl.}: int
+        # a little hack to get the size of a JmpBuf in the generated C code
+        # in a platform independent way
+
+  template forEachStackSlotAux(gch, gcMark: untyped) {.dirty.} =
+    for stack in gch.stack.items():
+      var max = cast[ByteAddress](gch.stack.bottom)
+      var sp = cast[ByteAddress](addr(registers)) -% sizeof(pointer)
+      while sp >=% max:
+        gcMark(gch, cast[PPointer](sp)[])
+        sp = sp -% sizeof(pointer)
 
   template forEachStackSlot(gch, gcMark: untyped) {.dirty.} =
-    var registers {.noinit.}: C_JmpBuf
-
-    if c_setjmp(registers) == 0'i32: # To fill the C stack with registers.
-      for stack in gch.stack.items():
-        var max = cast[ByteAddress](gch.stack.bottom)
-        var sp = cast[ByteAddress](addr(registers)) -% sizeof(pointer)
-        while sp >=% max:
-          gcMark(gch, cast[PPointer](sp)[])
-          sp = sp -% sizeof(pointer)
+    when defined(emscripten) or defined(wasm):
+      var registers: cint
+      forEachStackSlotAux(gch, gcMark)
+    else:
+      var registers {.noinit.}: C_JmpBuf
+      if c_setjmp(registers) == 0'i32: # To fill the C stack with registers.
+        forEachStackSlotAux(gch, gcMark)
 
 else:
   # ---------------------------------------------------------------------------
@@ -361,7 +418,7 @@ proc prepareDealloc(cell: PCell) =
     # the finalizer could invoke something that
     # allocates memory; this could trigger a garbage
     # collection. Since we are already collecting we
-    # prevend recursive entering here by a lock.
+    # prevent recursive entering here by a lock.
     # XXX: we should set the cell's children to nil!
     inc(gch.recGcLock)
     (cast[Finalizer](t.finalizer))(cellToUsr(cell))
@@ -369,17 +426,52 @@ proc prepareDealloc(cell: PCell) =
   decTypeSize(cell, t)
 
 proc deallocHeap*(runFinalizers = true; allowGcAfterwards = true) =
-  ## Frees the thread local heap. Runs every finalizer if ``runFinalizers```
+  ## Frees the thread local heap. Runs every finalizer if ``runFinalizers``
   ## is true. If ``allowGcAfterwards`` is true, a minimal amount of allocation
   ## happens to ensure the GC can continue to work after the call
   ## to ``deallocHeap``.
+  template deallocCell(x) =
+    if isCell(x):
+      # cast to PCell is correct here:
+      prepareDealloc(cast[PCell](x))
+
   if runFinalizers:
-    for x in allObjects(gch.region):
-      if isCell(x):
-        # cast to PCell is correct here:
-        var c = cast[PCell](x)
-        prepareDealloc(c)
+    when not declared(allObjectsAsProc):
+      for x in allObjects(gch.region):
+        deallocCell(x)
+    else:
+      var spaceIter: ObjectSpaceIter
+      while true:
+        let x = allObjectsAsProc(gch.region, addr spaceIter)
+        if spaceIter.state < 0: break
+        deallocCell(x)
+
   deallocOsPages(gch.region)
   zeroMem(addr gch.region, sizeof(gch.region))
   if allowGcAfterwards:
     initGC()
+
+type
+  GlobalMarkerProc = proc () {.nimcall, benign.}
+var
+  globalMarkersLen {.exportc.}: int
+  globalMarkers {.exportc.}: array[0..3499, GlobalMarkerProc]
+  threadLocalMarkersLen {.exportc.}: int
+  threadLocalMarkers {.exportc.}: array[0..3499, GlobalMarkerProc]
+  gHeapidGenerator: int
+
+proc nimRegisterGlobalMarker(markerProc: GlobalMarkerProc) {.compilerproc.} =
+  if globalMarkersLen <= high(globalMarkers):
+    globalMarkers[globalMarkersLen] = markerProc
+    inc globalMarkersLen
+  else:
+    cstderr.rawWrite("[GC] cannot register global variable; too many global variables")
+    quit 1
+
+proc nimRegisterThreadLocalMarker(markerProc: GlobalMarkerProc) {.compilerproc.} =
+  if threadLocalMarkersLen <= high(threadLocalMarkers):
+    threadLocalMarkers[threadLocalMarkersLen] = markerProc
+    inc threadLocalMarkersLen
+  else:
+    cstderr.rawWrite("[GC] cannot register thread local variable; too many thread local variables")
+    quit 1

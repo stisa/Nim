@@ -22,7 +22,7 @@ when true:
   import os
 
   type
-    In_out = tuple[src, dest, options: string]
+    In_out = tuple[src, dest: string, options: ref int]
 
   let
     nil_var: In_out = ("hey"/"there", "something", nil)
@@ -75,16 +75,16 @@ varargso("foo", "bar", "baz")
 
 type
   Flago = enum
-    tfNeedsInit, tfNotNil
+    tfRequiresInit, tfNotNil
 
-var s: set[Flago] = {tfNeedsInit}
+var s: set[Flago] = {tfRequiresInit}
 
-if {tfNeedsInit, tfNotNil} * s != {}:
+if {tfRequiresInit, tfNotNil} * s != {}:
   echo "yes"
 else:
   echo "no"
 
-if {tfNeedsInit, tfNotNil} * s <= {tfNotNil}:
+if {tfRequiresInit, tfNotNil} * s <= {tfNotNil}:
   echo "yes"
 else:
   echo "no"

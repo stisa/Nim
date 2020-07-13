@@ -1,5 +1,5 @@
 discard """
-cmd: "nim cpp $file"
+targets: "cpp"
 output: '''
 cat
 cat
@@ -13,14 +13,8 @@ cat
 cat
 dog
 dog
-dog value
-cat value
-dog value
-cat value
 dog
 dog
-dog value
-cat value
 dog 1
 dog 2
 '''
@@ -34,9 +28,9 @@ template reject(x) =
 
 import macros
 
-macro skipElse(n: untyped): typed = n[0]
+macro skipElse(n: untyped): untyped = n[0]
 
-template acceptWithCovariance(x, otherwise): typed =
+template acceptWithCovariance(x, otherwise): untyped =
   when nimEnableCovariance:
     x
   else:
@@ -85,16 +79,16 @@ proc wantsCovariantSeq2(s: seq[AnimalRef]) =
 proc wantsCovariantSeq3(s: seq[RefAlias[Animal]]) =
   for a in s: echo a.x
 
-proc wantsCovariantOperArray(s: openarray[ref Animal]) =
+proc wantsCovariantOpenArray(s: openarray[ref Animal]) =
   for a in s: echo a.x
 
-proc modifiesCovariantOperArray(s: var openarray[ref Animal]) =
+proc modifiesCovariantOpenArray(s: var openarray[ref Animal]) =
   for a in s: echo a.x
 
-proc modifiesDerivedOperArray(s: var openarray[ref Dog]) =
+proc modifiesDerivedOpenArray(s: var openarray[ref Dog]) =
   for a in s: echo a.x
 
-proc wantsNonCovariantOperArray(s: openarray[Animal]) =
+proc wantsNonCovariantOpenArray(s: openarray[Animal]) =
   for a in s: echo a.x
 
 proc wantsCovariantArray(s: array[2, ref Animal]) =
@@ -170,7 +164,7 @@ vcat.x = "cat value"
 reject:
   vcat = vdog
 
-# XXX: The next two cases seem incosistent, perhaps we should change the rules
+# XXX: The next two cases seem inconsistent, perhaps we should change the rules
 accept:
   # truncating copies are allowed
   var vanimal: Animal = vdog
@@ -205,15 +199,15 @@ accept:
   wantsCovariantSeq3(@[AnimalRef(cat), dog])
   wantsCovariantSeq3(@[cat, dog])
 
-  wantsCovariantOperArray([cat, dog])
+  wantsCovariantOpenArray([cat, dog])
 
 acceptWithCovariance:
   wantsCovariantSeq1(@[cat, cat])
   wantsCovariantSeq2(@[dog, makeDerivedRef("dog X")])
   # XXX: wantsCovariantSeq3(@[cat, cat])
 
-  wantsCovariantOperArray(@[cat, cat])
-  wantsCovariantOperArray([dog, dog])
+  wantsCovariantOpenArray(@[cat, cat])
+  wantsCovariantOpenArray([dog, dog])
 else:
   echo "cat"
   echo "cat"
@@ -232,7 +226,7 @@ accept:
   modifiesDerivedArray(dogRefsArray)
   modifiesDerivedSeq(dogRefs)
 
-reject modifiesCovariantSeq(dogRefs)
+reject modifiesCovariantSeqd(ogRefs)
 reject modifiesCovariantSeq(addr(dogRefs))
 reject modifiesCovariantSeq(dogRefs.addr)
 
@@ -243,27 +237,27 @@ reject modifiesCovariantArray(dogRefsArray.addr)
 
 var dogValues = @[vdog, vdog]
 var dogValuesArray = [vdog, vdog]
-var animalValues = @[Animal(vdog), Animal(vcat)]
-var animalValuesArray = [Animal(vdog), Animal(vcat)]
+when false:
+  var animalValues = @[Animal(vdog), Animal(vcat)]
+  var animalValuesArray = [Animal(vdog), Animal(vcat)]
 
-wantsNonCovariantSeq animalValues
-wantsNonCovariantArray animalValuesArray
+  wantsNonCovariantSeq animalValues
+  wantsNonCovariantArray animalValuesArray
 
 reject wantsNonCovariantSeq(dogRefs)
-reject modifiesCovariantOperArray(dogRefs)
+reject modifiesCovariantOpenArray(dogRefs)
 reject wantsNonCovariantArray(dogRefsArray)
 reject wantsNonCovariantSeq(dogValues)
 reject wantsNonCovariantArray(dogValuesArray)
 reject modifiesValueArray()
 
-modifiesDerivedOperArray dogRefs
-reject modifiesDerivedOperArray(dogValues)
-reject modifiesDerivedOperArray(animalRefs)
+modifiesDerivedOpenArray dogRefs
+reject modifiesDerivedOpenArray(dogValues)
+reject modifiesDerivedOpenArray(animalRefs)
 
-wantsNonCovariantOperArray animalValues
-reject wantsNonCovariantOperArray(animalRefs)
-reject wantsNonCovariantOperArray(dogRefs)
-reject wantsNonCovariantOperArray(dogValues)
+reject wantsNonCovariantOpenArray(animalRefs)
+reject wantsNonCovariantOpenArray(dogRefs)
+reject wantsNonCovariantOpenArray(dogValues)
 
 var animalRefSeq: seq[ref Animal]
 
@@ -300,18 +294,18 @@ reject wantsVarPointer2(pcat)
 
 # covariance may be allowed for certain extern types
 
-{.emit: """
+{.emit: """/*TYPESECTION*/
 template <class T> struct FN { typedef void (*type)(T); };
 template <class T> struct ARR { typedef T DataType[2]; DataType data; };
 """.}
 
 type
-  MyPtr {.importcpp: "'0 *"} [out T] = object
+  MyPtr[out T] {.importcpp: "'0 *"}  = object
 
-  MySeq {.importcpp: "ARR<'0>", nodecl} [out T] = object
+  MySeq[out T] {.importcpp: "ARR<'0>", nodecl}  = object
     data: array[2, T]
 
-  MyAction {.importcpp: "FN<'0>::type"} [in T] = object
+  MyAction[in T] {.importcpp: "FN<'0>::type"}  = object
 
 var
   cAnimal: MyPtr[Animal]
@@ -421,4 +415,3 @@ reject usesAddressOfAnimalRefSeq(addr cAnimalValues)
 reject usesAddressOfAnimalRefSeq(addr cDogValues)
 accept usesAddressOfAnimalRefSeq(addr cAnimals)
 reject usesAddressOfAnimalRefSeq(addr cDogs)
-

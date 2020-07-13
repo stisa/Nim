@@ -1,5 +1,4 @@
 discard """
-  file: "tnewasyncudp.nim"
   output: "5000"
 """
 import asyncdispatch, nativesockets, net, strutils, os
@@ -29,10 +28,7 @@ proc saveReceivedPort(port: int) =
 
 proc prepareAddress(intaddr: uint32, intport: uint16): ptr Sockaddr_in =
   result = cast[ptr Sockaddr_in](alloc0(sizeof(Sockaddr_in)))
-  when defined(windows):
-    result.sin_family = toInt(nativesockets.AF_INET).int16
-  else:
-    result.sin_family = toInt(nativesockets.AF_INET)
+  result.sin_family = typeof(result.sin_family)(toInt(nativesockets.AF_INET))
   result.sin_port = nativesockets.htons(intport)
   result.sin_addr.s_addr = nativesockets.htonl(intaddr)
 
@@ -44,9 +40,9 @@ proc launchSwarm(name: ptr SockAddr) {.async.} =
   var saddr = Sockaddr_in()
   while i < swarmSize:
     var peeraddr = prepareAddress(INADDR_LOOPBACK, 0)
-    var sock = newAsyncNativeSocket(nativesockets.AF_INET,
-                                    nativesockets.SOCK_DGRAM,
-                                    Protocol.IPPROTO_UDP)
+    var sock = createAsyncNativeSocket(nativesockets.AF_INET,
+                                       nativesockets.SOCK_DGRAM,
+                                       Protocol.IPPROTO_UDP)
     if bindAddr(sock.SocketHandle, cast[ptr SockAddr](peeraddr),
               sizeof(Sockaddr_in).Socklen) < 0'i32:
       raiseOSError(osLastError())
@@ -54,7 +50,7 @@ proc launchSwarm(name: ptr SockAddr) {.async.} =
     k = 0
     while k < messagesToSend:
       zeroMem(addr(buffer[0]), 16384)
-      zeroMem(cast[pointer](addr(saddr)), sizeof(Sockaddr_in))      
+      zeroMem(cast[pointer](addr(saddr)), sizeof(Sockaddr_in))
       var message = "Message " & $(i * messagesToSend + k)
       await sendTo(sock, addr message[0], len(message),
                    name, sizeof(Sockaddr_in).SockLen)
@@ -62,7 +58,7 @@ proc launchSwarm(name: ptr SockAddr) {.async.} =
                                     16384, cast[ptr SockAddr](addr saddr),
                                     addr slen)
       size = 0
-      var grammString = $buffer
+      var grammString = $cstring(addr buffer)
       if grammString == message:
         saveSendingPort(sockport)
         inc(recvCount)
@@ -84,9 +80,9 @@ proc readMessages(server: AsyncFD) {.async.} =
                                   16384, cast[ptr SockAddr](addr(saddr)),
                                   addr(slen))
     size = 0
-    var grammString = $buffer
+    var grammString = $cstring(addr buffer)
     if grammString.startswith("Message ") and
-       saddr.sin_addr.s_addr == 0x100007F:
+       saddr.sin_addr.s_addr == nativesockets.ntohl(INADDR_LOOPBACK.uint32):
       await sendTo(server, addr grammString[0], len(grammString),
                    cast[ptr SockAddr](addr saddr), slen)
       inc(msgCount)
@@ -95,9 +91,9 @@ proc readMessages(server: AsyncFD) {.async.} =
 
 proc createServer() {.async.} =
   var name = prepareAddress(INADDR_LOOPBACK, serverPort)
-  var server = newAsyncNativeSocket(nativesockets.AF_INET,
-                                    nativesockets.SOCK_DGRAM,
-                                    Protocol.IPPROTO_UDP)
+  var server = createAsyncNativeSocket(nativesockets.AF_INET,
+                                       nativesockets.SOCK_DGRAM,
+                                       Protocol.IPPROTO_UDP)
   if bindAddr(server.SocketHandle, cast[ptr SockAddr](name),
               sizeof(Sockaddr_in).Socklen) < 0'i32:
     raiseOSError(osLastError())

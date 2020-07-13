@@ -29,15 +29,18 @@ const
   nativeStackTraceSupported = false
   hasSomeStackTrace = false
 
-proc quitOrDebug() {.inline.} =
-  quit(1)
+proc quitOrDebug() {.noreturn, importc: "abort", header: "<stdlib.h>", nodecl.}
 
 proc raiseException(e: ref Exception, ename: cstring) {.compilerRtl.} =
-  sysFatal(ReraiseError, "exception handling is not available")
+  sysFatal(ReraiseDefect, "exception handling is not available")
 
 proc reraiseException() {.compilerRtl.} =
-  sysFatal(ReraiseError, "no exception to reraise")
+  sysFatal(ReraiseDefect, "no exception to reraise")
 
 proc writeStackTrace() = discard
 
-proc setControlCHook(hook: proc () {.noconv.} not nil) = discard
+proc unsetControlCHook() = discard
+proc setControlCHook(hook: proc () {.noconv.}) = discard
+
+proc closureIterSetupExc(e: ref Exception) {.compilerproc, inline.} =
+  sysFatal(ReraiseDefect, "exception handling is not available")

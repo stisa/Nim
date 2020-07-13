@@ -2,14 +2,17 @@ discard ""
 type
    TObj = ref object
 
+{.experimental: "notnil".}
+
 proc check(a: TObj not nil) =
   echo repr(a)
 
 proc doit() =
    var x : array[0..1, TObj]
 
-   if x[0] != nil:
-      check(x[0])
+   let y = x[0]
+   if y != nil:
+      check(y)
 
 doit()
 

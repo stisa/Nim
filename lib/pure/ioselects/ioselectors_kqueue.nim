@@ -9,7 +9,7 @@
 
 #  This module implements BSD kqueue().
 
-import posix, times, kqueue
+import posix, times, kqueue, nativesockets
 
 const
   # Maximum number of events that can be returned.
@@ -27,8 +27,8 @@ when defined(macosx) or defined(freebsd) or defined(dragonfly):
     const MAX_DESCRIPTORS_ID = 29 # KERN_MAXFILESPERPROC (MacOS)
   else:
     const MAX_DESCRIPTORS_ID = 27 # KERN_MAXFILESPERPROC (FreeBSD)
-  proc sysctl(name: ptr cint, namelen: cuint, oldp: pointer, oldplen: ptr csize,
-              newp: pointer, newplen: csize): cint
+  proc sysctl(name: ptr cint, namelen: cuint, oldp: pointer, oldplen: ptr csize_t,
+              newp: pointer, newplen: csize_t): cint
        {.importc: "sysctl",header: """#include <sys/types.h>
                                       #include <sys/sysctl.h>"""}
 elif defined(netbsd) or defined(openbsd):
@@ -36,16 +36,16 @@ elif defined(netbsd) or defined(openbsd):
   # KERN_MAXFILES, because KERN_MAXFILES is always bigger,
   # than KERN_MAXFILESPERPROC.
   const MAX_DESCRIPTORS_ID = 7 # KERN_MAXFILES
-  proc sysctl(name: ptr cint, namelen: cuint, oldp: pointer, oldplen: ptr csize,
-              newp: pointer, newplen: csize): cint
+  proc sysctl(name: ptr cint, namelen: cuint, oldp: pointer, oldplen: ptr csize_t,
+              newp: pointer, newplen: csize_t): cint
        {.importc: "sysctl",header: """#include <sys/param.h>
                                       #include <sys/sysctl.h>"""}
 
 when hasThreadSupport:
   type
     SelectorImpl[T] = object
-      kqFD : cint
-      maxFD : int
+      kqFD: cint
+      maxFD: int
       changes: ptr SharedArray[KEvent]
       fds: ptr SharedArray[SelectorKey[T]]
       count: int
@@ -57,8 +57,8 @@ when hasThreadSupport:
 else:
   type
     SelectorImpl[T] = object
-      kqFD : cint
-      maxFD : int
+      kqFD: cint
+      maxFD: int
       changes: seq[KEvent]
       fds: seq[SelectorKey[T]]
       count: int
@@ -76,13 +76,13 @@ type
 
 proc getUnique[T](s: Selector[T]): int {.inline.} =
   # we create duplicated handles to get unique indexes for our `fds` array.
-  result = posix.fcntl(s.sock, F_DUPFD, s.sock)
+  result = posix.fcntl(s.sock, F_DUPFD_CLOEXEC, s.sock)
   if result == -1:
     raiseIOSelectorsError(osLastError())
 
-proc newSelector*[T](): Selector[T] =
+proc newSelector*[T](): owned(Selector[T]) =
   var maxFD = 0.cint
-  var size = csize(sizeof(cint))
+  var size = csize_t(sizeof(cint))
   var namearr = [1.cint, MAX_DESCRIPTORS_ID.cint]
   # Obtain maximum number of opened file descriptors for process
   if sysctl(addr(namearr[0]), 2, cast[pointer](addr maxFD), addr size,
@@ -96,8 +96,8 @@ proc newSelector*[T](): Selector[T] =
   # we allocating empty socket to duplicate it handle in future, to get unique
   # indexes for `fds` array. This is needed to properly identify
   # {Event.Timer, Event.Signal, Event.Process} events.
-  let usock = posix.socket(posix.AF_INET, posix.SOCK_STREAM,
-                             posix.IPPROTO_TCP).cint
+  let usock = createNativeSocket(posix.AF_INET, posix.SOCK_STREAM,
+                                 posix.IPPROTO_TCP).cint
   if usock == -1:
     let err = osLastError()
     discard posix.close(kqFD)
@@ -114,6 +114,9 @@ proc newSelector*[T](): Selector[T] =
     result.fds = newSeq[SelectorKey[T]](maxFD)
     result.changes = newSeqOfCap[KEvent](MAX_KQUEUE_EVENTS)
 
+  for i in 0 ..< maxFD:
+    result.fds[i].ident = InvalidIdent
+
   result.sock = usock
   result.kqFD = kqFD
   result.maxFD = maxFD.int
@@ -128,12 +131,6 @@ proc close*[T](s: Selector[T]) =
   if res1 != 0 or res2 != 0:
     raiseIOSelectorsError(osLastError())
 
-template clearKey[T](key: ptr SelectorKey[T]) =
-  var empty: T
-  key.ident = 0
-  key.events = {}
-  key.data = empty
-
 proc newSelectEvent*(): SelectEvent =
   var fds: array[2, cint]
   if posix.pipe(fds) != 0:
@@ -144,7 +141,7 @@ proc newSelectEvent*(): SelectEvent =
   result.rfd = fds[0]
   result.wfd = fds[1]
 
-proc setEvent*(ev: SelectEvent) =
+proc trigger*(ev: SelectEvent) =
   var data: uint64 = 1
   if posix.write(ev.wfd, addr data, sizeof(uint64)) != sizeof(uint64):
     raiseIOSelectorsError(osLastError())
@@ -217,11 +214,11 @@ else:
           raiseIOSelectorsError(osLastError())
         s.changes.setLen(0)
 
-proc registerHandle*[T](s: Selector[T], fd: SocketHandle,
+proc registerHandle*[T](s: Selector[T], fd: int | SocketHandle,
                         events: set[Event], data: T) =
   let fdi = int(fd)
   s.checkFd(fdi)
-  doAssert(s.fds[fdi].ident == 0)
+  doAssert(s.fds[fdi].ident == InvalidIdent)
   s.setKey(fdi, events, 0, data)
 
   if events != {}:
@@ -235,15 +232,15 @@ proc registerHandle*[T](s: Selector[T], fd: SocketHandle,
     when not declared(CACHE_EVENTS):
       flushKQueue(s)
 
-proc updateHandle*[T](s: Selector[T], fd: SocketHandle,
+proc updateHandle*[T](s: Selector[T], fd: int | SocketHandle,
                       events: set[Event]) =
   let maskEvents = {Event.Timer, Event.Signal, Event.Process, Event.Vnode,
                     Event.User, Event.Oneshot, Event.Error}
   let fdi = int(fd)
   s.checkFd(fdi)
   var pkey = addr(s.fds[fdi])
-  doAssert(pkey.ident != 0,
-           "Descriptor [" & $fdi & "] is not registered in the queue!")
+  doAssert(pkey.ident != InvalidIdent,
+           "Descriptor $# is not registered in the queue!" % $fdi)
   doAssert(pkey.events * maskEvents == {})
 
   if pkey.events != events:
@@ -269,7 +266,7 @@ proc registerTimer*[T](s: Selector[T], timeout: int, oneshot: bool,
                        data: T): int {.discardable.} =
   let fdi = getUnique(s)
   s.checkFd(fdi)
-  doAssert(s.fds[fdi].ident == 0)
+  doAssert(s.fds[fdi].ident == InvalidIdent)
 
   let events = if oneshot: {Event.Timer, Event.Oneshot} else: {Event.Timer}
   let flags: cushort = if oneshot: EV_ONESHOT or EV_ADD else: EV_ADD
@@ -291,7 +288,7 @@ proc registerSignal*[T](s: Selector[T], signal: int,
                         data: T): int {.discardable.} =
   let fdi = getUnique(s)
   s.checkFd(fdi)
-  doAssert(s.fds[fdi].ident == 0)
+  doAssert(s.fds[fdi].ident == InvalidIdent)
 
   s.setKey(fdi, {Event.Signal}, signal, data)
   var nmask, omask: Sigset
@@ -315,7 +312,7 @@ proc registerProcess*[T](s: Selector[T], pid: int,
                          data: T): int {.discardable.} =
   let fdi = getUnique(s)
   s.checkFd(fdi)
-  doAssert(s.fds[fdi].ident == 0)
+  doAssert(s.fds[fdi].ident == InvalidIdent)
 
   var kflags: cushort = EV_ONESHOT or EV_ADD
   setKey(s, fdi, {Event.Process, Event.Oneshot}, pid, data)
@@ -331,7 +328,7 @@ proc registerProcess*[T](s: Selector[T], pid: int,
 
 proc registerEvent*[T](s: Selector[T], ev: SelectEvent, data: T) =
   let fdi = ev.rfd.int
-  doAssert(s.fds[fdi].ident == 0, "Event is already registered in the queue!")
+  doAssert(s.fds[fdi].ident == InvalidIdent, "Event is already registered in the queue!")
   setKey(s, fdi, {Event.User}, 0, data)
 
   modifyKQueue(s, fdi.uint, EVFILT_READ, EV_ADD, 0, 0, nil)
@@ -374,7 +371,7 @@ proc unregister*[T](s: Selector[T], fd: int|SocketHandle) =
   let fdi = int(fd)
   s.checkFd(fdi)
   var pkey = addr(s.fds[fdi])
-  doAssert(pkey.ident != 0,
+  doAssert(pkey.ident != InvalidIdent,
            "Descriptor [" & $fdi & "] is not registered in the queue!")
 
   if pkey.events != {}:
@@ -434,7 +431,7 @@ proc unregister*[T](s: Selector[T], ev: SelectEvent) =
   let fdi = int(ev.rfd)
   s.checkFd(fdi)
   var pkey = addr(s.fds[fdi])
-  doAssert(pkey.ident != 0, "Event is not registered in the queue!")
+  doAssert(pkey.ident != InvalidIdent, "Event is not registered in the queue!")
   doAssert(Event.User in pkey.events)
   modifyKQueue(s, uint(fdi), EVFILT_READ, EV_DELETE, 0, 0, nil)
   when not declared(CACHE_EVENTS):
@@ -443,19 +440,21 @@ proc unregister*[T](s: Selector[T], ev: SelectEvent) =
   dec(s.count)
 
 proc selectInto*[T](s: Selector[T], timeout: int,
-                    results: var openarray[ReadyKey]): int =
+                    results: var openArray[ReadyKey]): int =
   var
     tv: Timespec
     resTable: array[MAX_KQUEUE_EVENTS, KEvent]
     ptv = addr tv
     maxres = MAX_KQUEUE_EVENTS
 
+  verifySelectParams(timeout)
+
   if timeout != -1:
     if timeout >= 1000:
-      tv.tv_sec = (timeout div 1_000).Time
+      tv.tv_sec = posix.Time(timeout div 1_000)
       tv.tv_nsec = (timeout %% 1_000) * 1_000_000
     else:
-      tv.tv_sec = 0.Time
+      tv.tv_sec = posix.Time(0)
       tv.tv_nsec = timeout * 1_000_000
   else:
     ptv = nil
@@ -503,6 +502,7 @@ proc selectInto*[T](s: Selector[T], timeout: int,
 
       if (kevent.flags and EV_ERROR) != 0:
         rkey.events = {Event.Error}
+        rkey.errorCode = OSErrorCode(kevent.data)
 
       case kevent.filter:
       of EVFILT_READ:
@@ -569,6 +569,16 @@ proc selectInto*[T](s: Selector[T], timeout: int,
         doAssert(true, "Unsupported kqueue filter in the queue!")
 
       if (kevent.flags and EV_EOF) != 0:
+        # TODO this error handling needs to be rethought.
+        # `fflags` can sometimes be `0x80000000` and thus we use 'cast'
+        # here:
+        if kevent.fflags != 0:
+          rkey.errorCode = cast[OSErrorCode](kevent.fflags)
+        else:
+          # This assumes we are dealing with sockets.
+          # TODO: For future-proofing it might be a good idea to give the
+          #       user access to the raw `kevent`.
+          rkey.errorCode = OSErrorCode(ECONNRESET)
         rkey.events.incl(Event.Error)
 
       results[k] = rkey
@@ -584,16 +594,19 @@ proc select*[T](s: Selector[T], timeout: int): seq[ReadyKey] =
 template isEmpty*[T](s: Selector[T]): bool =
   (s.count == 0)
 
-proc getData*[T](s: Selector[T], fd: SocketHandle|int): T =
+proc contains*[T](s: Selector[T], fd: SocketHandle|int): bool {.inline.} =
+  return s.fds[fd.int].ident != InvalidIdent
+
+proc getData*[T](s: Selector[T], fd: SocketHandle|int): var T =
   let fdi = int(fd)
   s.checkFd(fdi)
-  if s.fds[fdi].ident != 0:
+  if fdi in s:
     result = s.fds[fdi].data
 
 proc setData*[T](s: Selector[T], fd: SocketHandle|int, data: T): bool =
   let fdi = int(fd)
   s.checkFd(fdi)
-  if s.fds[fdi].ident != 0:
+  if fdi in s:
     s.fds[fdi].data = data
     result = true
 
@@ -602,8 +615,8 @@ template withData*[T](s: Selector[T], fd: SocketHandle|int, value,
   mixin checkFd
   let fdi = int(fd)
   s.checkFd(fdi)
-  if s.fds[fdi].ident != 0:
-    var value = addr(s.fds[fdi].data)
+  if fdi in s:
+    var value = addr(s.getData(fdi))
     body
 
 template withData*[T](s: Selector[T], fd: SocketHandle|int, value, body1,
@@ -611,8 +624,12 @@ template withData*[T](s: Selector[T], fd: SocketHandle|int, value, body1,
   mixin checkFd
   let fdi = int(fd)
   s.checkFd(fdi)
-  if s.fds[fdi].ident != 0:
-    var value = addr(s.fds[fdi].data)
+  if fdi in s:
+    var value = addr(s.getData(fdi))
     body1
   else:
     body2
+
+
+proc getFd*[T](s: Selector[T]): int =
+  return s.kqFD.int

@@ -27,10 +27,10 @@ block:
   var global = T(a: 11, b: "foo")
   proc test(): bool =
     var obj = T(a: 11, b: "foo")
-    {. emit: [result, " = (", obj.addr[], "[0].a == 11);"] .}
-    {. emit: [result, " = ", result, " && (", obj.addr[], "[0].b == \"foo\");"] .}
-    {. emit: [result, " = ", result, " && (", global, "[0].a == 11);"] .}
-    {. emit: [result, " = ", result, " && (", global, "[0].b == \"foo\");"] .}
+    {. emit: [result, " = (", obj.addr[], ".a == 11);"] .}
+    {. emit: [result, " = ", result, " && (", obj.addr[], ".b == \"foo\");"] .}
+    {. emit: [result, " = ", result, " && (", global, ".a == 11);"] .}
+    {. emit: [result, " = ", result, " && (", global, ".b == \"foo\");"] .}
   echo test()
 
 # Test addr of field:
@@ -62,8 +62,8 @@ block:
     result = result and obj1.`&&`.addr[] == "bar".cstring
     result = result and obj2.`if` == 0
     result = result and obj2.`for` == 0
-    result = result and obj2.`==`.isNil()
-    result = result and obj2.`&&`.isNil()
+    result = result and obj2.`==`.isNil
+    result = result and obj2.`&&`.isNil
   echo test()
 
 # Test codegen for fields with uppercase letters:

@@ -8,8 +8,10 @@
 #
 
 ## Shared list support.
+##
+## Unstable API.
 
-{.push stackTrace:off.}
+{.push stackTrace: off.}
 
 import
   locks
@@ -73,10 +75,10 @@ proc add*[A](x: var SharedList[A]; y: A) =
     node.d[node.dataLen] = y
     inc(node.dataLen)
 
-proc initSharedList*[A](): SharedList[A] =
-  initLock result.lock
-  result.head = nil
-  result.tail = nil
+proc init*[A](t: var SharedList[A]) =
+  initLock t.lock
+  t.head = nil
+  t.tail = nil
 
 proc clear*[A](t: var SharedList[A]) =
   withLock(t):

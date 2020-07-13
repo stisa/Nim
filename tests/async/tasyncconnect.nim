@@ -1,7 +1,6 @@
 discard """
-  file: "tasyncconnect.nim"
-  exitcode: 1
   outputsub: "Error: unhandled exception: Connection refused"
+  exitcode: 1
 """
 
 import
@@ -19,7 +18,7 @@ when defined(windows) or defined(nimdoc):
     quit("Error: unhandled exception: Connection refused")
 else:
     proc testAsyncConnect() {.async.} =
-        var s = newAsyncNativeSocket()
+        var s = createAsyncNativeSocket()
 
         await s.connect(testHost, testPort)
 

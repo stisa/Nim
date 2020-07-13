@@ -17,10 +17,9 @@
 ## runtime efficiency.
 
 include "system/inclrtl"
+import streams
 
-{.deadCodeElim: on.}
-
-{.push debugger:off .} # the user does not want to trace a part
+{.push debugger: off.} # the user does not want to trace a part
                        # of the standard library!
 
 const
@@ -35,10 +34,6 @@ type
     left, right: Rope
     length: int
     data: string # != nil if a leaf
-
-{.deprecated: [PRope: Rope].}
-
-proc isConc(r: Rope): bool {.inline.} = return isNil(r.data)
 
 # Note that the left and right pointers are not needed for leafs.
 # Leaves have relatively high memory overhead (~30 bytes on a 32
@@ -60,8 +55,8 @@ proc newRope(data: string): Rope =
   result.data = data
 
 var
-  cache {.threadvar.}: Rope     # the root of the cache tree
-  N {.threadvar.}: Rope         # dummy rope needed for splay algorithm
+  cache {.threadvar.}: Rope # the root of the cache tree
+  N {.threadvar.}: Rope     # dummy rope needed for splay algorithm
 
 when countCacheMisses:
   var misses, hits: int
@@ -70,7 +65,7 @@ proc splay(s: string, tree: Rope, cmpres: var int): Rope =
   var c: int
   var t = tree
   N.left = nil
-  N.right = nil               # reset to nil
+  N.right = nil # reset to nil
   var le = N
   var r = N
   while true:
@@ -130,7 +125,7 @@ proc insertInCache(s: string, tree: Rope): Rope =
       result.left = t
       t.right = nil
 
-proc rope*(s: string): Rope {.rtl, extern: "nro$1Str".} =
+proc rope*(s: string = ""): Rope {.rtl, extern: "nro$1Str".} =
   ## Converts a string to a rope.
   if s.len == 0:
     result = nil
@@ -172,16 +167,8 @@ proc `&`*(a, b: Rope): Rope {.rtl, extern: "nroConcRopeRope".} =
   else:
     result = newRope()
     result.length = a.length + b.length
-    when false:
-      # XXX rebalancing would be nice, but is too expensive.
-      result.left = a.left
-      var x = newRope()
-      x.left = a.right
-      x.right = b
-      result.right = x
-    else:
-      result.left = a
-      result.right = b
+    result.left = a
+    result.right = b
 
 proc `&`*(a: Rope, b: string): Rope {.rtl, extern: "nroConcRopeStr".} =
   ## the concatenation operator for ropes.
@@ -210,11 +197,11 @@ proc `[]`*(r: Rope, i: int): char {.rtl, extern: "nroCharAt".} =
   var j = i
   if x == nil: return
   while true:
-    if not isConc(x):
-      if x.data.len <% j: return x.data[j]
+    if x != nil and x.data.len > 0:
+      if j < x.data.len: return x.data[j]
       return '\0'
     else:
-      if x.left.len >% j:
+      if x.left.length > j:
         x = x.left
       else:
         x = x.right
@@ -226,11 +213,11 @@ iterator leaves*(r: Rope): string =
     var stack = @[r]
     while stack.len > 0:
       var it = stack.pop
-      while isConc(it):
+      while it.left != nil:
+        assert(it.right != nil)
         stack.add(it.right)
         it = it.left
         assert(it != nil)
-      assert(it.data != nil)
       yield it.data
 
 iterator items*(r: Rope): char =
@@ -242,59 +229,14 @@ proc write*(f: File, r: Rope) {.rtl, extern: "nro$1".} =
   ## writes a rope to a file.
   for s in leaves(r): write(f, s)
 
-proc `$`*(r: Rope): string  {.rtl, extern: "nroToString".}=
+proc write*(s: Stream, r: Rope) {.rtl, extern: "nroWriteStream".} =
+  ## writes a rope to a stream.
+  for rs in leaves(r): write(s, rs)
+
+proc `$`*(r: Rope): string {.rtl, extern: "nroToString".} =
   ## converts a rope back to a string.
-  result = newString(r.len)
-  setLen(result, 0)
+  result = newStringOfCap(r.len)
   for s in leaves(r): add(result, s)
-
-when false:
-  # Format string caching seems reasonable: All leaves can be shared and format
-  # string parsing has to be done only once. A compiled format string is stored
-  # as a rope. A negative length is used for the index into the args array.
-  proc compiledArg(idx: int): Rope =
-    new(result)
-    result.length = -idx
-
-  proc compileFrmt(frmt: string): Rope =
-    var i = 0
-    var length = len(frmt)
-    result = nil
-    var num = 0
-    while i < length:
-      if frmt[i] == '$':
-        inc(i)
-        case frmt[i]
-        of '$':
-          add(result, "$")
-          inc(i)
-        of '#':
-          inc(i)
-          add(result, compiledArg(num+1))
-          inc(num)
-        of '0'..'9':
-          var j = 0
-          while true:
-            j = j * 10 + ord(frmt[i]) - ord('0')
-            inc(i)
-            if frmt[i] notin {'0'..'9'}: break
-          add(s, compiledArg(j))
-        of '{':
-          inc(i)
-          var j = 0
-          while frmt[i] in {'0'..'9'}:
-            j = j * 10 + ord(frmt[i]) - ord('0')
-            inc(i)
-          if frmt[i] == '}': inc(i)
-          else: raise newException(EInvalidValue, "invalid format string")
-          add(s, compiledArg(j))
-        else: raise newException(EInvalidValue, "invalid format string")
-      var start = i
-      while i < length:
-        if frmt[i] != '$': inc(i)
-        else: break
-      if i - 1 >= start:
-        add(result, substr(frmt, start, i-1))
 
 proc `%`*(frmt: string, args: openArray[Rope]): Rope {.
   rtl, extern: "nroFormat".} =
@@ -345,46 +287,47 @@ proc addf*(c: var Rope, frmt: string, args: openArray[Rope]) {.
   ## shortcut for ``add(c, frmt % args)``.
   add(c, frmt % args)
 
-const
-  bufSize = 1024              # 1 KB is reasonable
+when not defined(js) and not defined(nimscript):
+  const
+    bufSize = 1024 # 1 KB is reasonable
 
-proc equalsFile*(r: Rope, f: File): bool {.rtl, extern: "nro$1File".} =
-  ## returns true if the contents of the file `f` equal `r`.
-  var
-    buf: array[bufSize, char]
-    bpos = buf.len
-    blen = buf.len
+  proc equalsFile*(r: Rope, f: File): bool {.rtl, extern: "nro$1File".} =
+    ## returns true if the contents of the file `f` equal `r`.
+    var
+      buf: array[bufSize, char]
+      bpos = buf.len
+      blen = buf.len
 
-  for s in leaves(r):
-    var spos = 0
-    let slen = s.len
-    while spos < slen:
-      if bpos == blen:
-        # Read more data
-        bpos = 0
-        blen = readBuffer(f, addr(buf[0]), buf.len)
-        if blen == 0:  # no more data in file
+    for s in leaves(r):
+      var spos = 0
+      let slen = s.len
+      while spos < slen:
+        if bpos == blen:
+          # Read more data
+          bpos = 0
+          blen = readBuffer(f, addr(buf[0]), buf.len)
+          if blen == 0: # no more data in file
+            result = false
+            return
+        let n = min(blen - bpos, slen - spos)
+        # TODO There's gotta be a better way of comparing here...
+        if not equalMem(addr(buf[bpos]),
+                        cast[pointer](cast[int](cstring(s))+spos), n):
           result = false
           return
-      let n = min(blen - bpos, slen - spos)
-      # TODO There's gotta be a better way of comparing here...
-      if not equalMem(addr(buf[bpos]),
-                      cast[pointer](cast[int](cstring(s))+spos), n):
-        result = false
-        return
-      spos += n
-      bpos += n
+        spos += n
+        bpos += n
 
-  result = readBuffer(f, addr(buf[0]), 1) == 0  # check that we've read all
+    result = readBuffer(f, addr(buf[0]), 1) == 0 # check that we've read all
 
-proc equalsFile*(r: Rope, filename: string): bool {.rtl, extern: "nro$1Str".} =
-  ## returns true if the contents of the file `f` equal `r`. If `f` does not
-  ## exist, false is returned.
-  var f: File
-  result = open(f, filename)
-  if result:
-    result = equalsFile(r, f)
-    close(f)
+  proc equalsFile*(r: Rope, filename: string): bool {.rtl, extern: "nro$1Str".} =
+    ## returns true if the contents of the file `f` equal `r`. If `f` does not
+    ## exist, false is returned.
+    var f: File
+    result = open(f, filename)
+    if result:
+      result = equalsFile(r, f)
+      close(f)
 
 new(N) # init dummy node for splay algorithm
 

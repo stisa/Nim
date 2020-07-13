@@ -1,3 +1,16 @@
+discard """
+sortoutput: true
+output: '''
+(x: 0.0)
+(x: 0.0)
+(x: 0.0)
+test
+test
+test
+'''
+disabled: "openbsd"
+"""
+
 # bug #2257
 import threadpool
 
@@ -22,5 +35,5 @@ proc main =
   sync()
   for ix in 1..3: channels[ix].close()
 
-when isMainModule:
+when true:
   main()

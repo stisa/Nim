@@ -99,6 +99,7 @@ var EXDEV* {.importc: "EXDEV", header: "<errno.h>".}: cint
 
 # <fcntl.h>
 var F_DUPFD* {.importc: "F_DUPFD", header: "<fcntl.h>".}: cint
+var F_DUPFD_CLOEXEC* {.importc: "F_DUPFD", header: "<fcntl.h>".}: cint
 var F_GETFD* {.importc: "F_GETFD", header: "<fcntl.h>".}: cint
 var F_SETFD* {.importc: "F_SETFD", header: "<fcntl.h>".}: cint
 var F_GETFL* {.importc: "F_GETFL", header: "<fcntl.h>".}: cint
@@ -125,6 +126,7 @@ var O_ACCMODE* {.importc: "O_ACCMODE", header: "<fcntl.h>".}: cint
 var O_RDONLY* {.importc: "O_RDONLY", header: "<fcntl.h>".}: cint
 var O_RDWR* {.importc: "O_RDWR", header: "<fcntl.h>".}: cint
 var O_WRONLY* {.importc: "O_WRONLY", header: "<fcntl.h>".}: cint
+var O_CLOEXEC* {.importc: "O_CLOEXEC", header: "<fcntl.h>".}: cint
 var POSIX_FADV_NORMAL* {.importc: "POSIX_FADV_NORMAL", header: "<fcntl.h>".}: cint
 var POSIX_FADV_SEQUENTIAL* {.importc: "POSIX_FADV_SEQUENTIAL", header: "<fcntl.h>".}: cint
 var POSIX_FADV_RANDOM* {.importc: "POSIX_FADV_RANDOM", header: "<fcntl.h>".}: cint
@@ -302,6 +304,7 @@ var IF_NAMESIZE* {.importc: "IF_NAMESIZE", header: "<net/if.h>".}: cint
 var IPPROTO_IP* {.importc: "IPPROTO_IP", header: "<netinet/in.h>".}: cint
 var IPPROTO_IPV6* {.importc: "IPPROTO_IPV6", header: "<netinet/in.h>".}: cint
 var IPPROTO_ICMP* {.importc: "IPPROTO_ICMP", header: "<netinet/in.h>".}: cint
+var IPPROTO_ICMPV6* {.importc: "IPPROTO_ICMPV6", header: "<netinet/in.h>".}: cint
 var IPPROTO_RAW* {.importc: "IPPROTO_RAW", header: "<netinet/in.h>".}: cint
 var IPPROTO_TCP* {.importc: "IPPROTO_TCP", header: "<netinet/in.h>".}: cint
 var IPPROTO_UDP* {.importc: "IPPROTO_UDP", header: "<netinet/in.h>".}: cint
@@ -433,6 +436,9 @@ var PROT_READ* {.importc: "PROT_READ", header: "<sys/mman.h>".}: cint
 var PROT_WRITE* {.importc: "PROT_WRITE", header: "<sys/mman.h>".}: cint
 var PROT_EXEC* {.importc: "PROT_EXEC", header: "<sys/mman.h>".}: cint
 var PROT_NONE* {.importc: "PROT_NONE", header: "<sys/mman.h>".}: cint
+var MAP_ANONYMOUS* {.importc: "MAP_ANONYMOUS", header: "<sys/mman.h>".}: cint
+var MAP_FIXED_NOREPLACE* {.importc: "MAP_FIXED_NOREPLACE", header: "<sys/mman.h>".}: cint
+var MAP_NORESERVE* {.importc: "MAP_NORESERVE", header: "<sys/mman.h>".}: cint
 var MAP_SHARED* {.importc: "MAP_SHARED", header: "<sys/mman.h>".}: cint
 var MAP_PRIVATE* {.importc: "MAP_PRIVATE", header: "<sys/mman.h>".}: cint
 var MAP_FIXED* {.importc: "MAP_FIXED", header: "<sys/mman.h>".}: cint
@@ -450,6 +456,9 @@ var POSIX_MADV_DONTNEED* {.importc: "POSIX_MADV_DONTNEED", header: "<sys/mman.h>
 var POSIX_TYPED_MEM_ALLOCATE* {.importc: "POSIX_TYPED_MEM_ALLOCATE", header: "<sys/mman.h>".}: cint
 var POSIX_TYPED_MEM_ALLOCATE_CONTIG* {.importc: "POSIX_TYPED_MEM_ALLOCATE_CONTIG", header: "<sys/mman.h>".}: cint
 var POSIX_TYPED_MEM_MAP_ALLOCATABLE* {.importc: "POSIX_TYPED_MEM_MAP_ALLOCATABLE", header: "<sys/mman.h>".}: cint
+
+# <sys/resource.h>
+var RLIMIT_NOFILE* {.importc: "RLIMIT_NOFILE", header: "<sys/resource.h>".}: cint
 
 # <sys/select.h>
 var FD_SETSIZE* {.importc: "FD_SETSIZE", header: "<sys/select.h>".}: cint
@@ -485,10 +494,10 @@ var SOMAXCONN* {.importc: "SOMAXCONN", header: "<sys/socket.h>".}: cint
 var MSG_PEEK* {.importc: "MSG_PEEK", header: "<sys/socket.h>".}: cint
 var MSG_TRUNC* {.importc: "MSG_TRUNC", header: "<sys/socket.h>".}: cint
 var MSG_WAITALL* {.importc: "MSG_WAITALL", header: "<sys/socket.h>".}: cint
-var AF_INET* {.importc: "AF_INET", header: "<sys/socket.h>".}: TSa_Family
-var AF_INET6* {.importc: "AF_INET6", header: "<sys/socket.h>".}: TSa_Family
-var AF_UNIX* {.importc: "AF_UNIX", header: "<sys/socket.h>".}: TSa_Family
-var AF_UNSPEC* {.importc: "AF_UNSPEC", header: "<sys/socket.h>".}: TSa_Family
+var AF_INET* {.importc: "AF_INET", header: "<sys/socket.h>".}: cint
+var AF_INET6* {.importc: "AF_INET6", header: "<sys/socket.h>".}: cint
+var AF_UNIX* {.importc: "AF_UNIX", header: "<sys/socket.h>".}: cint
+var AF_UNSPEC* {.importc: "AF_UNSPEC", header: "<sys/socket.h>".}: cint
 var SHUT_RD* {.importc: "SHUT_RD", header: "<sys/socket.h>".}: cint
 var SHUT_RDWR* {.importc: "SHUT_RDWR", header: "<sys/socket.h>".}: cint
 var SHUT_WR* {.importc: "SHUT_WR", header: "<sys/socket.h>".}: cint
@@ -651,7 +660,7 @@ var SC_MQ_OPEN_MAX* {.importc: "_SC_MQ_OPEN_MAX", header: "<unistd.h>".}: cint
 var SC_MQ_PRIO_MAX* {.importc: "_SC_MQ_PRIO_MAX", header: "<unistd.h>".}: cint
 var SC_NGROUPS_MAX* {.importc: "_SC_NGROUPS_MAX", header: "<unistd.h>".}: cint
 var SC_OPEN_MAX* {.importc: "_SC_OPEN_MAX", header: "<unistd.h>".}: cint
-var SC_PAGE_SIZE* {.importc: "_SC_PAGE_SIZE", header: "<unistd.h>".}: cint
+var SC_PAGESIZE* {.importc: "_SC_PAGESIZE", header: "<unistd.h>".}: cint
 var SC_PRIORITIZED_IO* {.importc: "_SC_PRIORITIZED_IO", header: "<unistd.h>".}: cint
 var SC_PRIORITY_SCHEDULING* {.importc: "_SC_PRIORITY_SCHEDULING", header: "<unistd.h>".}: cint
 var SC_RAW_SOCKETS* {.importc: "_SC_RAW_SOCKETS", header: "<unistd.h>".}: cint

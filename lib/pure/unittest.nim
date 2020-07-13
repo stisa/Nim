@@ -9,6 +9,11 @@
 
 ## :Author: Zahary Karadjov
 ##
+## **Note**: Instead of ``unittest.nim``, please consider to use
+## the ``testament`` tool which offers process isolation for your tests.
+## Also ``when isMainModule: doAssert conditionHere`` is usually a
+## much simpler solution for testing purposes.
+##
 ## This module implements boilerplate to make unit testing easy.
 ##
 ## The test status and name is printed after any output or traceback.
@@ -21,16 +26,44 @@
 ## ``nim c -r <testfile.nim>`` exits with 0 or 1
 ##
 ## Running a single test
-## ---------------------
+## =====================
 ##
-## Simply specify the test name as a command line argument.
+## Specify the test name as a command line argument.
 ##
 ## .. code::
 ##
-##   nim c -r test "my super awesome test name"
+##   nim c -r test "my test name" "another test"
 ##
-## Example
-## -------
+## Multiple arguments can be used.
+##
+## Running a single test suite
+## ===========================
+##
+## Specify the suite name delimited by ``"::"``.
+##
+## .. code::
+##
+##   nim c -r test "my test name::"
+##
+## Selecting tests by pattern
+## ==========================
+##
+## A single ``"*"`` can be used for globbing.
+##
+## Delimit the end of a suite name with ``"::"``.
+##
+## Tests matching **any** of the arguments are executed.
+##
+## .. code::
+##
+##   nim c -r test fast_suite::mytest1 fast_suite::mytest2
+##   nim c -r test "fast_suite::mytest*"
+##   nim c -r test "auth*::" "crypto::hashing*"
+##   # Run suites starting with 'bug #' and standalone tests starting with '#'
+##   nim c -r test 'bug #*::' '::#*'
+##
+## Examples
+## ========
 ##
 ## .. code:: nim
 ##
@@ -55,18 +88,22 @@
 ##
 ##     test "out of bounds error is thrown on bad access":
 ##       let v = @[1, 2, 3]  # you can do initialization here
-##       expect(IndexError):
+##       expect(IndexDefect):
 ##         discard v[4]
 ##
 ##     echo "suite teardown: run once after the tests"
 
+import std/private/since
+
 import
-  macros, strutils, streams, times, sets
+  macros, strutils, streams, times, sets, sequtils
 
 when declared(stdout):
   import os
 
-when not defined(ECMAScript):
+const useTerminal = not defined(js)
+
+when useTerminal:
   import terminal
 
 type
@@ -75,10 +112,10 @@ type
     FAILED,
     SKIPPED
 
-  OutputLevel* = enum  ## The output verbosity of the tests.
-    PRINT_ALL,         ## Print as much as possible.
-    PRINT_FAILURES,    ## Print only the failed tests.
-    PRINT_NONE         ## Print nothing.
+  OutputLevel* = enum ## The output verbosity of the tests.
+    PRINT_ALL,        ## Print as much as possible.
+    PRINT_FAILURES,   ## Print only the failed tests.
+    PRINT_NONE        ## Print nothing.
 
   TestResult* = object
     suiteName*: string
@@ -93,9 +130,16 @@ type
   ConsoleOutputFormatter* = ref object of OutputFormatter
     colorOutput: bool
       ## Have test results printed in color.
-      ## Default is true for the non-js target
-      ## unless, the environment variable
-      ## ``NIMTEST_NO_COLOR`` is set.
+      ## Default is true for the non-js target,
+      ## for which ``stdout`` is a tty.
+      ## Setting the environment variable
+      ## ``NIMTEST_COLOR`` to ``always`` or
+      ## ``never`` changes the default for the
+      ## non-js target to true or false respectively.
+      ## The deprecated environment variable
+      ## ``NIMTEST_NO_COLOR``, when set,
+      ## changes the default to true, if
+      ## ``NIMTEST_COLOR`` is undefined.
     outputLevel: OutputLevel
       ## Set the verbosity of test results.
       ## Default is ``PRINT_ALL``, unless
@@ -110,8 +154,6 @@ type
     testStartTime: float
     testStackTrace: string
 
-{.deprecated: [TTestStatus: TestStatus, TOutputLevel: OutputLevel]}
-
 var
   abortOnError* {.threadvar.}: bool ## Set to true in order to quit
                                     ## immediately on fail. Default is false,
@@ -121,7 +163,8 @@ var
 
   checkpoints {.threadvar.}: seq[string]
   formatters {.threadvar.}: seq[OutputFormatter]
-  testsToRun {.threadvar.}: HashSet[string]
+  testsFilters {.threadvar.}: HashSet[string]
+  disabledParamFiltering {.threadvar.}: bool
 
 when declared(stdout):
   abortOnError = existsEnv("NIMTEST_ABORT_ON_ERROR")
@@ -130,7 +173,8 @@ method suiteStarted*(formatter: OutputFormatter, suiteName: string) {.base, gcsa
   discard
 method testStarted*(formatter: OutputFormatter, testName: string) {.base, gcsafe.} =
   discard
-method failureOccurred*(formatter: OutputFormatter, checkpoints: seq[string], stackTrace: string) {.base, gcsafe.} =
+method failureOccurred*(formatter: OutputFormatter, checkpoints: seq[string],
+    stackTrace: string) {.base, gcsafe.} =
   ## ``stackTrace`` is provided only if the failure occurred due to an exception.
   ## ``checkpoints`` is never ``nil``.
   discard
@@ -140,25 +184,37 @@ method suiteEnded*(formatter: OutputFormatter) {.base, gcsafe.} =
   discard
 
 proc addOutputFormatter*(formatter: OutputFormatter) =
-  if formatters == nil:
-    formatters = @[formatter]
-  else:
-    formatters.add(formatter)
+  formatters.add(formatter)
 
-proc newConsoleOutputFormatter*(outputLevel: OutputLevel = PRINT_ALL,
-                                colorOutput = true): ConsoleOutputFormatter =
+proc delOutputFormatter*(formatter: OutputFormatter) =
+  keepIf(formatters, proc (x: OutputFormatter): bool =
+    x != formatter)
+
+proc resetOutputFormatters* {.since: (1, 1).} =
+  formatters = @[]
+
+proc newConsoleOutputFormatter*(outputLevel: OutputLevel = OutputLevel.PRINT_ALL,
+                                colorOutput = true): <//>ConsoleOutputFormatter =
   ConsoleOutputFormatter(
     outputLevel: outputLevel,
     colorOutput: colorOutput
   )
 
-proc defaultConsoleFormatter*(): ConsoleOutputFormatter =
+proc defaultConsoleFormatter*(): <//>ConsoleOutputFormatter =
   when declared(stdout):
     # Reading settings
     # On a terminal this branch is executed
     var envOutLvl = os.getEnv("NIMTEST_OUTPUT_LVL").string
-    var colorOutput  = not existsEnv("NIMTEST_NO_COLOR")
-    var outputLevel = PRINT_ALL
+    var colorOutput = isatty(stdout)
+    if existsEnv("NIMTEST_COLOR"):
+      let colorEnv = getEnv("NIMTEST_COLOR")
+      if colorEnv == "never":
+        colorOutput = false
+      elif colorEnv == "always":
+        colorOutput = true
+    elif existsEnv("NIMTEST_NO_COLOR"):
+      colorOutput = false
+    var outputLevel = OutputLevel.PRINT_ALL
     if envOutLvl.len > 0:
       for opt in countup(low(OutputLevel), high(OutputLevel)):
         if $opt == envOutLvl:
@@ -170,7 +226,7 @@ proc defaultConsoleFormatter*(): ConsoleOutputFormatter =
 
 method suiteStarted*(formatter: ConsoleOutputFormatter, suiteName: string) =
   template rawPrint() = echo("\n[Suite] ", suiteName)
-  when not defined(ECMAScript):
+  when useTerminal:
     if formatter.colorOutput:
       styledEcho styleBright, fgBlue, "\n[Suite] ", resetStyle, suiteName
     else: rawPrint()
@@ -180,8 +236,9 @@ method suiteStarted*(formatter: ConsoleOutputFormatter, suiteName: string) =
 method testStarted*(formatter: ConsoleOutputFormatter, testName: string) =
   formatter.isInTest = true
 
-method failureOccurred*(formatter: ConsoleOutputFormatter, checkpoints: seq[string], stackTrace: string) =
-  if stackTrace != nil:
+method failureOccurred*(formatter: ConsoleOutputFormatter,
+                        checkpoints: seq[string], stackTrace: string) =
+  if stackTrace.len > 0:
     echo stackTrace
   let prefix = if formatter.isInSuite: "    " else: ""
   for msg in items(checkpoints):
@@ -190,18 +247,19 @@ method failureOccurred*(formatter: ConsoleOutputFormatter, checkpoints: seq[stri
 method testEnded*(formatter: ConsoleOutputFormatter, testResult: TestResult) =
   formatter.isInTest = false
 
-  if formatter.outputLevel != PRINT_NONE and
-     (formatter.outputLevel == PRINT_ALL or testResult.status == FAILED):
-    let prefix = if testResult.suiteName != nil: "  " else: ""
-    template rawPrint() = echo(prefix, "[", $testResult.status, "] ", testResult.testName)
-    when not defined(ECMAScript):
-      if formatter.colorOutput and not defined(ECMAScript):
+  if formatter.outputLevel != OutputLevel.PRINT_NONE and
+      (formatter.outputLevel == OutputLevel.PRINT_ALL or testResult.status == TestStatus.FAILED):
+    let prefix = if testResult.suiteName.len > 0: "  " else: ""
+    template rawPrint() = echo(prefix, "[", $testResult.status, "] ",
+        testResult.testName)
+    when useTerminal:
+      if formatter.colorOutput:
         var color = case testResult.status
-                    of OK: fgGreen
-                    of FAILED: fgRed
-                    of SKIPPED: fgYellow
-                    else: fgWhite
-        styledEcho styleBright, color, prefix, "[", $testResult.status, "] ", resetStyle, testResult.testName
+          of TestStatus.OK: fgGreen
+          of TestStatus.FAILED: fgRed
+          of TestStatus.SKIPPED: fgYellow
+        styledEcho styleBright, color, prefix, "[", $testResult.status, "] ",
+            resetStyle, testResult.testName
       else:
         rawPrint()
     else:
@@ -225,7 +283,7 @@ proc xmlEscape(s: string): string =
       else:
         result.add(c)
 
-proc newJUnitOutputFormatter*(stream: Stream): JUnitOutputFormatter =
+proc newJUnitOutputFormatter*(stream: Stream): <//>JUnitOutputFormatter =
   ## Creates a formatter that writes report to the specified stream in
   ## JUnit format.
   ## The ``stream`` is NOT closed automatically when the test are finished,
@@ -253,23 +311,25 @@ method testStarted*(formatter: JUnitOutputFormatter, testName: string) =
   formatter.testStackTrace.setLen(0)
   formatter.testStartTime = epochTime()
 
-method failureOccurred*(formatter: JUnitOutputFormatter, checkpoints: seq[string], stackTrace: string) =
+method failureOccurred*(formatter: JUnitOutputFormatter,
+                        checkpoints: seq[string], stackTrace: string) =
   ## ``stackTrace`` is provided only if the failure occurred due to an exception.
   ## ``checkpoints`` is never ``nil``.
   formatter.testErrors.add(checkpoints)
-  if stackTrace != nil:
+  if stackTrace.len > 0:
     formatter.testStackTrace = stackTrace
 
 method testEnded*(formatter: JUnitOutputFormatter, testResult: TestResult) =
   let time = epochTime() - formatter.testStartTime
   let timeStr = time.formatFloat(ffDecimal, precision = 8)
-  formatter.stream.writeLine("\t\t<testcase name=\"$#\" time=\"$#\">" % [xmlEscape(testResult.testName), timeStr])
-  case testResult.status:
-  of OK:
+  formatter.stream.writeLine("\t\t<testcase name=\"$#\" time=\"$#\">" % [
+      xmlEscape(testResult.testName), timeStr])
+  case testResult.status
+  of TestStatus.OK:
     discard
-  of SKIPPED:
+  of TestStatus.SKIPPED:
     formatter.stream.writeLine("<skipped />")
-  of FAILED:
+  of TestStatus.FAILED:
     let failureMsg = if formatter.testStackTrace.len > 0 and
                         formatter.testErrors.len > 0:
                        xmlEscape(formatter.testErrors[^1])
@@ -280,8 +340,9 @@ method testEnded*(formatter: JUnitOutputFormatter, testResult: TestResult) =
     var errs = ""
     if formatter.testErrors.len > 1:
       var startIdx = if formatter.testStackTrace.len > 0: 0 else: 1
-      var endIdx = if formatter.testStackTrace.len > 0: formatter.testErrors.len - 2
-                   else: formatter.testErrors.len - 1
+      var endIdx = if formatter.testStackTrace.len > 0:
+          formatter.testErrors.len - 2
+        else: formatter.testErrors.len - 1
 
       for errIdx in startIdx..endIdx:
         if errs.len > 0:
@@ -289,33 +350,77 @@ method testEnded*(formatter: JUnitOutputFormatter, testResult: TestResult) =
         errs.add(xmlEscape(formatter.testErrors[errIdx]))
 
     if formatter.testStackTrace.len > 0:
-      formatter.stream.writeLine("\t\t\t<error message=\"$#\">$#</error>" % [failureMsg, xmlEscape(formatter.testStackTrace)])
+      formatter.stream.writeLine("\t\t\t<error message=\"$#\">$#</error>" % [
+          failureMsg, xmlEscape(formatter.testStackTrace)])
       if errs.len > 0:
         formatter.stream.writeLine("\t\t\t<system-err>$#</system-err>" % errs)
     else:
-      formatter.stream.writeLine("\t\t\t<failure message=\"$#\">$#</failure>" % [failureMsg, errs])
+      formatter.stream.writeLine("\t\t\t<failure message=\"$#\">$#</failure>" %
+          [failureMsg, errs])
 
   formatter.stream.writeLine("\t\t</testcase>")
 
 method suiteEnded*(formatter: JUnitOutputFormatter) =
   formatter.stream.writeLine("\t</testsuite>")
 
-proc shouldRun(testName: string): bool =
-  if testsToRun.len == 0:
+proc glob(matcher, filter: string): bool =
+  ## Globbing using a single `*`. Empty `filter` matches everything.
+  if filter.len == 0:
     return true
 
-  result = testName in testsToRun
+  if not filter.contains('*'):
+    return matcher == filter
+
+  let beforeAndAfter = filter.split('*', maxsplit = 1)
+  if beforeAndAfter.len == 1:
+    # "foo*"
+    return matcher.startsWith(beforeAndAfter[0])
+
+  if matcher.len < filter.len - 1:
+    return false # "12345" should not match "123*345"
+
+  return matcher.startsWith(beforeAndAfter[0]) and matcher.endsWith(
+      beforeAndAfter[1])
+
+proc matchFilter(suiteName, testName, filter: string): bool =
+  if filter == "":
+    return true
+  if testName == filter:
+    # corner case for tests containing "::" in their name
+    return true
+  let suiteAndTestFilters = filter.split("::", maxsplit = 1)
+
+  if suiteAndTestFilters.len == 1:
+    # no suite specified
+    let testFilter = suiteAndTestFilters[0]
+    return glob(testName, testFilter)
+
+  return glob(suiteName, suiteAndTestFilters[0]) and
+         glob(testName, suiteAndTestFilters[1])
+
+when defined(testing): export matchFilter
+
+proc shouldRun(currentSuiteName, testName: string): bool =
+  ## Check if a test should be run by matching suiteName and testName against
+  ## test filters.
+  if testsFilters.len == 0:
+    return true
+
+  for f in testsFilters:
+    if matchFilter(currentSuiteName, testName, f):
+      return true
+
+  return false
 
 proc ensureInitialized() =
-  if formatters == nil:
+  if formatters.len == 0:
     formatters = @[OutputFormatter(defaultConsoleFormatter())]
 
-  if not testsToRun.isValid:
-    testsToRun.init()
-    when declared(os):
+  if not disabledParamFiltering:
+    when declared(paramCount):
       # Read tests to run from the command line.
       for i in 1 .. paramCount():
-        testsToRun.incl(paramStr(i))
+        testsFilters.incl(paramStr(i))
 
 # These two procs are added as workarounds for
 # https://github.com/nim-lang/Nim/issues/5549
@@ -377,6 +482,8 @@ template suite*(name, body) {.dirty.} =
     finally:
       suiteEnded()
 
+template exceptionTypeName(e: typed): string = $e.name
+
 template test*(name, body) {.dirty.} =
   ## Define a single test case identified by `name`.
   ##
@@ -391,13 +498,13 @@ template test*(name, body) {.dirty.} =
   ## .. code-block::
   ##
   ##  [OK] roses are red
-  bind shouldRun, checkpoints, formatters, ensureInitialized, testEnded
+  bind shouldRun, checkpoints, formatters, ensureInitialized, testEnded, exceptionTypeName
 
   ensureInitialized()
 
-  if shouldRun(name):
+  if shouldRun(when declared(testSuiteName): testSuiteName else: "", name):
     checkpoints = @[]
-    var testStatusIMPL {.inject.} = OK
+    var testStatusIMPL {.inject.} = TestStatus.OK
 
     for formatter in formatters:
       formatter.testStarted(name)
@@ -409,16 +516,17 @@ template test*(name, body) {.dirty.} =
       body
 
     except:
-      when not defined(js):
-        checkpoint("Unhandled exception: " & getCurrentExceptionMsg())
-        var stackTrace {.inject.} = getCurrentException().getStackTrace()
+      let e = getCurrentException()
+      let eTypeDesc = "[" & exceptionTypeName(e) & "]"
+      checkpoint("Unhandled exception: " & getCurrentExceptionMsg() & " " & eTypeDesc)
+      var stackTrace {.inject.} = e.getStackTrace()
       fail()
 
     finally:
-      if testStatusIMPL == FAILED:
-        programResult += 1
+      if testStatusIMPL == TestStatus.FAILED:
+        programResult = 1
       let testResult = TestResult(
-        suiteName: when declared(testSuiteName): testSuiteName else: nil,
+        suiteName: when declared(testSuiteName): testSuiteName else: "",
         testName: name,
         status: testStatusIMPL
       )
@@ -436,8 +544,6 @@ proc checkpoint*(msg: string) =
   ##  checkpoint("Checkpoint B")
   ##
   ## outputs "Checkpoint A" once it fails.
-  if checkpoints == nil:
-    checkpoints = @[]
   checkpoints.add(msg)
   # TODO: add support for something like SCOPED_TRACE from Google Test
 
@@ -457,9 +563,9 @@ template fail* =
   bind ensureInitialized
 
   when declared(testStatusIMPL):
-    testStatusIMPL = FAILED
+    testStatusIMPL = TestStatus.FAILED
   else:
-    programResult += 1
+    programResult = 1
 
   ensureInitialized()
 
@@ -468,9 +574,9 @@ template fail* =
     when declared(stackTrace):
       formatter.failureOccurred(checkpoints, stackTrace)
     else:
-      formatter.failureOccurred(checkpoints, nil)
+      formatter.failureOccurred(checkpoints, "")
 
-  when not defined(ECMAScript):
+  when declared(programResult):
     if abortOnError: quit(programResult)
 
   checkpoints = @[]
@@ -484,11 +590,11 @@ template skip* =
   ##
   ## .. code-block:: nim
   ##
-  ##  if not isGLConextCreated():
+  ##  if not isGLContextCreated():
   ##    skip()
   bind checkpoints
 
-  testStatusIMPL = SKIPPED
+  testStatusIMPL = TestStatus.SKIPPED
   checkpoints = @[]
 
 macro check*(conditions: untyped): untyped =
@@ -509,10 +615,6 @@ macro check*(conditions: untyped): untyped =
   ##    "AKB48".toLowerAscii() == "akb48"
   ##    'C' in teams
   let checked = callsite()[1]
-  var
-    argsAsgns = newNimNode(nnkStmtList)
-    argsPrintOuts = newNimNode(nnkStmtList)
-    counter = 0
 
   template asgn(a: untyped, value: typed) =
     var a = value # XXX: we need "var: var" here in order to
@@ -522,66 +624,71 @@ macro check*(conditions: untyped): untyped =
     when compiles(string($value)):
       checkpoint(name & " was " & $value)
 
-  proc inspectArgs(exp: NimNode): NimNode =
-    result = copyNimTree(exp)
-    if exp[0].kind == nnkIdent and
-        $exp[0] in ["and", "or", "not", "in", "notin", "==", "<=",
+  proc inspectArgs(exp: NimNode): tuple[assigns, check, printOuts: NimNode] =
+    result.check = copyNimTree(exp)
+    result.assigns = newNimNode(nnkStmtList)
+    result.printOuts = newNimNode(nnkStmtList)
+
+    var counter = 0
+
+    if exp[0].kind in {nnkIdent, nnkOpenSymChoice, nnkClosedSymChoice, nnkSym} and
+        $exp[0] in ["not", "in", "notin", "==", "<=",
                     ">=", "<", ">", "!=", "is", "isnot"]:
-      for i in countup(1, exp.len - 1):
+
+      for i in 1 ..< exp.len:
         if exp[i].kind notin nnkLiterals:
           inc counter
-          var arg = newIdentNode(":p" & $counter)
-          var argStr = exp[i].toStrLit
-          var paramAst = exp[i]
+          let argStr = exp[i].toStrLit
+          let paramAst = exp[i]
           if exp[i].kind == nnkIdent:
-            argsPrintOuts.add getAst(print(argStr, paramAst))
-          if exp[i].kind in nnkCallKinds:
-            var callVar = newIdentNode(":c" & $counter)
-            argsAsgns.add getAst(asgn(callVar, paramAst))
-            result[i] = callVar
-            argsPrintOuts.add getAst(print(argStr, callVar))
+            result.printOuts.add getAst(print(argStr, paramAst))
+          if exp[i].kind in nnkCallKinds + {nnkDotExpr, nnkBracketExpr}:
+            let callVar = newIdentNode(":c" & $counter)
+            result.assigns.add getAst(asgn(callVar, paramAst))
+            result.check[i] = callVar
+            result.printOuts.add getAst(print(argStr, callVar))
           if exp[i].kind == nnkExprEqExpr:
             # ExprEqExpr
             #   Ident !"v"
             #   IntLit 2
-            result[i] = exp[i][1]
-          if exp[i].typekind notin {ntyTypeDesc}:
-            argsAsgns.add getAst(asgn(arg, paramAst))
-            argsPrintOuts.add getAst(print(argStr, arg))
+            result.check[i] = exp[i][1]
+          if exp[i].typeKind notin {ntyTypeDesc}:
+            let arg = newIdentNode(":p" & $counter)
+            result.assigns.add getAst(asgn(arg, paramAst))
+            result.printOuts.add getAst(print(argStr, arg))
             if exp[i].kind != nnkExprEqExpr:
-              result[i] = arg
+              result.check[i] = arg
             else:
-              result[i][1] = arg
+              result.check[i][1] = arg
 
   case checked.kind
   of nnkCallKinds:
-    template rewrite(call, lineInfoLit, callLit,
-                     argAssgs, argPrintOuts) =
-      block:
-        argAssgs #all callables (and assignments) are run here
-        if not call:
-          checkpoint(lineInfoLit & ": Check failed: " & callLit)
-          argPrintOuts
-          fail()
 
-    var checkedStr = checked.toStrLit
-    let parameterizedCheck = inspectArgs(checked)
-    result = getAst(rewrite(parameterizedCheck, checked.lineinfo, checkedStr,
-                            argsAsgns, argsPrintOuts))
+    let (assigns, check, printOuts) = inspectArgs(checked)
+    let lineinfo = newStrLitNode(checked.lineInfo)
+    let callLit = checked.toStrLit
+    result = quote do:
+      block:
+        `assigns`
+        if not `check`:
+          checkpoint(`lineinfo` & ": Check failed: " & `callLit`)
+          `printOuts`
+          fail()
 
   of nnkStmtList:
     result = newNimNode(nnkStmtList)
-    for i in countup(0, checked.len - 1):
-      if checked[i].kind != nnkCommentStmt:
-        result.add(newCall(!"check", checked[i]))
+    for node in checked:
+      if node.kind != nnkCommentStmt:
+        result.add(newCall(!"check", node))
 
   else:
-    template rewrite(exp, lineInfoLit, expLit) =
-      if not exp:
-        checkpoint(lineInfoLit & ": Check failed: " & expLit)
-        fail()
+    let lineinfo = newStrLitNode(checked.lineInfo)
+    let callLit = checked.toStrLit
 
-    result = getAst(rewrite(checked, checked.lineinfo, checked.toStrLit))
+    result = quote do:
+      if not `checked`:
+        checkpoint(`lineinfo` & ": Check failed: " & `callLit`)
+        fail()
 
 template require*(conditions: untyped) =
   ## Same as `check` except any failed test causes the program to quit
@@ -604,13 +711,13 @@ macro expect*(exceptions: varargs[typed], body: untyped): untyped =
   ##  import math, random
   ##  proc defectiveRobot() =
   ##    randomize()
-  ##    case random(1..4)
+  ##    case rand(1..4)
   ##    of 1: raise newException(OSError, "CANNOT COMPUTE!")
   ##    of 2: discard parseInt("Hello World!")
   ##    of 3: raise newException(IOError, "I can't do that Dave.")
   ##    else: assert 2 + 2 == 5
   ##
-  ##  expect IOError, OSError, ValueError, AssertionError:
+  ##  expect IOError, OSError, ValueError, AssertionDefect:
   ##    defectiveRobot()
   let exp = callsite()
   template expectBody(errorTypes, lineInfoLit, body): NimNode {.dirty.} =
@@ -630,4 +737,8 @@ macro expect*(exceptions: varargs[typed], body: untyped): untyped =
   for i in countup(1, exp.len - 2):
     errorTypes.add(exp[i])
 
-  result = getAst(expectBody(errorTypes, exp.lineinfo, body))
+  result = getAst(expectBody(errorTypes, exp.lineInfo, body))
+
+proc disableParamFiltering* =
+  ## disables filtering tests with the command line params
+  disabledParamFiltering = true

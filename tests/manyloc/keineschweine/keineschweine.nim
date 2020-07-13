@@ -5,7 +5,7 @@ import
   sg_gui, sg_assets, sound_buffer, enet_client
 when defined(profiler):
   import nimprof
-{.deadCodeElim: on.}
+
 type
   PPlayer* = ref TPlayer
   TPlayer* = object
@@ -230,7 +230,7 @@ proc explode*(b: PLiveBullet) =
 proc bulletUpdate(body: PBody, gravity: TVector, damping, dt: CpFloat){.cdecl.} =
   body.UpdateVelocity(gravity, damping, dt)
 
-template getPhysical() {.immediate.} =
+template getPhysical() {.dirty.} =
   result.body = space.addBody(newBody(
     record.physics.mass,
     record.physics.moment))
@@ -281,7 +281,7 @@ proc draw*(window: PRenderWindow; b: PLiveBullet) {.inline.} =
 
 
 proc free*(veh: PVehicle) =
-  ("Destroying vehicle "& veh.record.name).echo
+  ("Destroying vehicle " & veh.record.name).echo
   destroy(veh.sprite)
   if veh.shape.isNil: "Free'd vehicle's shape was NIL!".echo
   else: space.removeShape(veh.shape)
@@ -290,12 +290,12 @@ proc free*(veh: PVehicle) =
   veh.body.free()
   veh.shape.free()
   veh.sprite = nil
-  veh.body   = nil
+  veh.body = nil
   veh.shape  = nil
 
 
 proc newVehicle*(record: PVehicleRecord): PVehicle =
-  echo("Creating "& record.name)
+  echo("Creating " & record.name)
   new(result, free)
   result.record = record
   result.sprite = result.record.anim.spriteSheet.sprite.copy()
@@ -446,7 +446,7 @@ ingameClient.registerHandler(KeyF12, down, proc() = toggleSpec())
 ingameClient.registerHandler(KeyF11, down, toggleShipSelect)
 ingameClient.registerHandler(MouseLeft, down, handleLClick)
 when defined(recordMode):
-  if not existsDir("data/snapshots"):
+  if not dirExists("data/snapshots"):
     createDir("data/snapshots")
   ingameClient.registerHandler(keynum9, down, proc() =
     if not isRecording: startRecording()
@@ -486,7 +486,7 @@ when defined(DebugKeys):
       activeVehicle.body.setPos mouseToSpace())
   ingameClient.registerHandler(KeyY, down, proc() =
     const looloo = ["Asteroid1", "Asteroid2"]
-    addObject(looloo[random(looloo.len)]))
+    addObject(looloo[rand(looloo.len)]))
   ingameClient.registerHandler(KeyO, down, proc() =
     if objects.len == 0:
       echo "Objects is empty"
@@ -663,7 +663,7 @@ proc mainRender() =
 proc readyMainState() =
   specInputClient.setActive()
 
-when isMainModule:
+when true:
   import parseopt
 
   localPlayer = newPlayer()

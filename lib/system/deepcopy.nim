@@ -7,10 +7,13 @@
 #    distribution, for details about the copyright.
 #
 
+const
+  TableSize = when sizeof(int) <= 2: 0xff else: 0xff_ffff
+
 type
   PtrTable = ptr object
     counter, max: int
-    data: array[0xff_ffff, (pointer, pointer)]
+    data: array[TableSize, (pointer, pointer)]
 
 template hashPtr(key: pointer): int = cast[int](key) shr 8
 template allocPtrTable: untyped =
@@ -105,9 +108,8 @@ proc genericDeepCopyAux(dest, src: pointer, mt: PNimType; tab: var PtrTable) =
     var dst = cast[ByteAddress](cast[PPointer](dest)[])
     for i in 0..seq.len-1:
       genericDeepCopyAux(
-        cast[pointer](dst +% i*% mt.base.size +% GenericSeqSize),
-        cast[pointer](cast[ByteAddress](s2) +% i *% mt.base.size +%
-                     GenericSeqSize),
+        cast[pointer](dst +% align(GenericSeqSize, mt.base.align) +% i *% mt.base.size),
+        cast[pointer](cast[ByteAddress](s2) +% align(GenericSeqSize, mt.base.align) +% i *% mt.base.size),
         mt.base, tab)
   of tyObject:
     # we need to copy m_type field for tyObject, as it could be empty for
@@ -122,8 +124,8 @@ proc genericDeepCopyAux(dest, src: pointer, mt: PNimType; tab: var PtrTable) =
     genericDeepCopyAux(dest, src, mt.node, tab)
   of tyArray, tyArrayConstr:
     for i in 0..(mt.size div mt.base.size)-1:
-      genericDeepCopyAux(cast[pointer](d +% i*% mt.base.size),
-                         cast[pointer](s +% i*% mt.base.size), mt.base, tab)
+      genericDeepCopyAux(cast[pointer](d +% i *% mt.base.size),
+                         cast[pointer](s +% i *% mt.base.size), mt.base, tab)
   of tyRef:
     let s2 = cast[PPointer](src)[]
     if s2 == nil:
@@ -165,14 +167,14 @@ proc genericDeepCopyAux(dest, src: pointer, mt: PNimType; tab: var PtrTable) =
   else:
     copyMem(dest, src, mt.size)
 
-proc genericDeepCopy(dest, src: pointer, mt: PNimType) {.compilerProc.} =
+proc genericDeepCopy(dest, src: pointer, mt: PNimType) {.compilerproc.} =
   GC_disable()
   var tab = initPtrTable()
   genericDeepCopyAux(dest, src, mt, tab)
   deinit tab
   GC_enable()
 
-proc genericSeqDeepCopy(dest, src: pointer, mt: PNimType) {.compilerProc.} =
+proc genericSeqDeepCopy(dest, src: pointer, mt: PNimType) {.compilerproc.} =
   # also invoked for 'string'
   var src = src
   genericDeepCopy(dest, addr(src), mt)
@@ -183,5 +185,5 @@ proc genericDeepCopyOpenArray(dest, src: pointer, len: int,
     d = cast[ByteAddress](dest)
     s = cast[ByteAddress](src)
   for i in 0..len-1:
-    genericDeepCopy(cast[pointer](d +% i*% mt.base.size),
-                    cast[pointer](s +% i*% mt.base.size), mt.base)
+    genericDeepCopy(cast[pointer](d +% i *% mt.base.size),
+                    cast[pointer](s +% i *% mt.base.size), mt.base)

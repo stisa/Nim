@@ -50,8 +50,8 @@ template withDir*(dir: string; body: stmt): stmt =
   body
   cd(curDir)
 
-when isMainModule:
-  if not existsFile("nakefile.nim"):
+when true:
+  if not fileExists("nakefile.nim"):
     echo "No nakefile.nim found. Current working dir is ", getCurrentDir()
     quit 1
   var args = ""

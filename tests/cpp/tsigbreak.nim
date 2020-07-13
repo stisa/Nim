@@ -1,5 +1,6 @@
 discard """
-  cmd: "nim cpp $file"
+  targets: "cpp"
+  action: compile
 """
 
 import tables, lists

@@ -1,5 +1,4 @@
 discard """
-  file: "tstaticparams.nim"
   output: "abracadabra\ntest\n3\n15\n4\n2\nfloat\n3\nfloat\nyin\nyang\n2\n4\n4\n2\n3"
 """
 
@@ -140,7 +139,7 @@ dontBind1 bb_2
 dontBind2 bb_1
 dontBind2 bb_2
 
-# https://github.com/nim-lang/Nim/issues/4524 
+# https://github.com/nim-lang/Nim/issues/4524
 const
   size* = 2
 
@@ -173,3 +172,26 @@ echo inSize([
   [4, 5, 6]
 ])
 
+block: # #12864
+  template fun() =
+    type Object = object
+    proc fun(f: Object): int = 1
+    proc fun(f: static[int]): int = 2
+    doAssert fun(Object()) == 1
+
+    var a: Object
+    doAssert fun(a) == 1
+
+    proc fun2(f: Object): int = 1
+    proc fun2(f: static[Object]): int = 2
+    doAssert fun2(Object()) == 2
+    doAssert fun2(a) == 1
+    const a2 = Object()
+    doAssert fun2(a2) == 2
+
+  fun()
+  static: fun()
+
+when true: #12864 original snippet
+  import times
+  discard times.format(initDateTime(30, mMar, 2017, 0, 0, 0, 0, utc()), TimeFormat())
