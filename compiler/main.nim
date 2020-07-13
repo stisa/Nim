@@ -282,6 +282,7 @@ proc mainCommand*(graph: ModuleGraph) =
   of "cpp", "compiletocpp": compileToBackend(backendCpp)
   of "objc", "compiletooc": compileToBackend(backendObjc)
   of "js", "compiletojs": compileToBackend(backendJs)
+  of "wasm", "compiletowasm": compileToBackend(backendWasm)
   of "r": compileToBackend(backendC) # different from `"run"`!
   of "run":
     when hasTinyCBackend:

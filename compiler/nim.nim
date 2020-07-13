@@ -87,13 +87,16 @@ proc handleCmdLine(cache: IdentCache; conf: ConfigRef) =
     if conf.cmd == cmdRun:
       tccgen.run(conf, conf.arguments)
   if optRun in conf.globalOptions:
-    let output = conf.absOutFile
+    var output = conf.absOutFile
     case conf.cmd
     of cmdCompileToBackend:
       var cmdPrefix = ""
       case conf.backend
       of backendC, backendCpp, backendObjc: discard
-      of backendJs, backendWasm: cmdPrefix = findNodeJs() & " "
+      of backendJs: cmdPrefix = findNodeJs() & " "
+      of backendWasm:
+        cmdPrefix = findNodeJs() & " "
+        output = changeFileExt(output, "js")
       else: doAssert false, $conf.backend
       execExternalProgram(conf, cmdPrefix & output.quoteShell & ' ' & conf.arguments)
     of cmdDoc, cmdRst2html:

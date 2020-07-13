@@ -112,6 +112,7 @@ type
     backendObjc = "objc" # was cmdCompileToOC
     # backendNimscript = "nimscript" # this could actually work
     # backendLlvm = "llvm" # probably not well supported; was cmdCompileToLLVM
+    backendWasm = "wasm"
 
 type
   TCommands* = enum           # Nim's commands
@@ -546,7 +547,7 @@ const
   docRootDefault* = "@default" # using `@` instead of `$` to avoid shell quoting complications
   oKeepVariableNames* = true
   WasmGlue* = RelativeFile"nimwasm.cfg"
-  
+
 proc mainCommandArg*(conf: ConfigRef): string =
   ## This is intended for commands like check or parse
   ## which will work on the main project file unless

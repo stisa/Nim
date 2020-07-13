@@ -147,7 +147,7 @@ proc render*(i: WAsmImport, indlv = 0): string =
 
 proc render*(e: WAsmExport, indlv = 0): string =
   result = """{
-  name": "$1",
+  "name": "$1",
   "id": $2, "kind": $3
 }""" % [e.name, $e.id, render(e.kind)]
   result = result.indent(indlv)
@@ -157,7 +157,7 @@ proc render*(m: WAsmMemory, indlv = 0): string =
   result = result.indent(indlv)
 
 proc render*(d: WAsmData, indlv = 0): string =
-  result = """{ "index": $1, "payload": "$2" }""" % [$d.index, render(d.payload)]
+  result = """{ "index": $1, "payload": $2 }""" % [$d.index, render(d.payload)]
   result = result.indent(indlv)
 
 proc render*(f: WAsmFunction, indlv = 0): string =
