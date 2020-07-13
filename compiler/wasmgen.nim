@@ -142,17 +142,20 @@ proc store(w: WasmGen, typ: PType, n: PNode,  memIndex: var int): WasmNode =
       if not gn.isNil: result.sons.add(gn)
   of nkNilLit:
     dataseg.setLen(w.config.getSize(n.typ).alignTo4)
-  of nkBracket:
+  of nkBracket, nkCurly:
     for val in n:
       let gn = w.store(val.typ, val, memIndex)
       if not gn.isNil: result.sons.add(gn)
-  of nkCurly:
+  #of nkCurly:
     #echo memIndex
     # this is a set. This means each val in n is either a (u)int8 or (u)int16
     # and thus val <= 65535 (max of uint16)
-    dataseg.setLen(4)
+    #[dataseg.setLen(4)
     for val in n:
-      dataseg[val.intVal.int32 div 32] = dataseg[val.intVal.int32 div 32] or (1 shl (val.intVal mod 32)).uint8
+      echo "VAAAAALLLLLL"
+      echo w.config.treeToYaml(val)
+      dataseg[val.intVal.int32 div 32] = dataseg[val.intVal.int32 div 32] or (1 shl (val.intVal mod 32)).uint8]#
+    
   of nkAddr:
     dataseg.setLen(wasmPtrSize)
     result = newStore(
@@ -178,8 +181,53 @@ proc store(w: WasmGen, typ: PType, n: PNode,  memIndex: var int): WasmNode =
       )
   of nkExprColonExpr:
     w.config.internalError("TODO: genIdentDefs: initialize " & $n.kind)
+  of nkConv, nkHiddenStdConv:
+    #echo "nkHiddenStdConv for " & $n.typ.kind
+    var convOP: WasmOpKind
+    case w.config.mapType(n[1].typ):
+    of vtI32:
+      case w.config.mapType(n.typ):
+      of vtI32: convOP = woNop
+      of vtF32: convOP = cvConvertF32S_I32
+      of vtF64: convOP = cvConvertF64S_I32
+      of vtI64: convOP = cvExtendI64S_I32
+      else: w.config.internalError("#nkHiddenStdConv2")
+    of vtF32:
+      case w.config.mapType(n.typ):
+      of vtI32: convOP = cvTruncI32S_F32
+      of vtF32: convOP = woNop
+      of vtF64: convOP = cvPromoteF64_F32
+      of vtI64: convOP = cvTruncI64S_F32
+      else: w.config.internalError("#nkHiddenStdConv2")
+    of vtF64:
+      case w.config.mapType(n.typ):
+      of vtI32: convOP = cvTruncI32S_F64
+      of vtF32: convOP = cvDemoteF32_F64
+      of vtF64: convOP = woNop
+      of vtI64: convOP = cvTruncI64S_F64
+      else: w.config.internalError("#nkHiddenStdConv2")
+    of vtI64:
+      case w.config.mapType(n.typ):
+      of vtI32: convOP = cvWrapI32_I64
+      of vtF32: convOP = cvConvertF32S_I64
+      of vtF64: convOP = cvConvertF64S_I64
+      of vtI64: convOP = woNop
+      else: w.config.internalError("#nkHiddenStdConv2")
+    else: w.config.internalError("#nkHiddenStdConv2")
+    if convOP == woNop:
+      result = w.gen(n[1]) 
+    else:
+      result = newUnaryOp(convOP, w.gen(n[1]))
+    # echo w.config.treeToYaml(n)
+    # result = # FIXME: does this work for every symbol?
+    #   newStore(
+    #     w.config.mapStoreKind(n.typ),
+    #     w.gen(n),
+    #     0'i32, newConst(memIndex)
+    #   )
   else:
     w.config.internalError("genIdentDefs: unhandled identdef kind: " & $n.kind)
+  
   if dataseg.len > 0: # TODO: proper fix for isNil changes
     w.m.data.add(newData(memIndex, dataseg))
     memIndex = ( memIndex + dataseg.len ).alignTo4
@@ -361,7 +409,7 @@ const BinaryMagic = {mAddI,mAddU,mSubI,mSubU,mMulI,mMulU,mDivI,mDivU,mSucc,mPred
 const FloatsMagic = {mEqF64, mLeF64, mLtF64, mAddF64, mSubF64, mMulF64, mDivF64}
 
 proc callMagic(w: WasmGen, s: PSym, n: PNode): WasmNode = 
-  #echo $s.magic, treeToYaml n
+  #echo $s.magic, w.config.treeToYaml n
   case s.magic:
   of UnaryMagic:
     return newUnaryOp(w.config.getMagicOp(s.magic), w.gen(n[1]))
@@ -374,6 +422,10 @@ proc callMagic(w: WasmGen, s: PSym, n: PNode): WasmNode =
       return newBinaryOp(w.config.getFloat32Magic(s.magic), w.gen(n[1]), w.gen(n[2]))
     else:
       return newBinaryOp(w.config.getMagicOp(s.magic), w.gen(n[1]), w.gen(n[2]))
+  of mAddr:
+    #echo $(s.magic), w.config.treeToYaml(n[1], 0, 1)
+    #echo $(s.magic), w.config.symToYaml(n[1].sym)
+    return newConst(n[1].sym.offset)
   of mBitnotI:
     return newBinaryOp(ibXor32, w.gen(n[1]), newConst(-1.int32))
   of mNew:

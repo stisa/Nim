@@ -97,3 +97,4 @@ htmldocs
 
 ## these are not needed anymore unless checkout old older versions
 nimdoc.out.css
+lib/system/wasmsys copy.nim
