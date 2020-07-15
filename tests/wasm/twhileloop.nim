@@ -1,3 +1,9 @@
+discard """
+  targets:  "wasm"
+  action:   "run"
+  timeout:  60.0
+"""
+
 proc check[T](x:T) {.header:"glue", importc:"assert".}
 
 var ar  = [0.0'f32,1,2]

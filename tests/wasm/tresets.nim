@@ -1,3 +1,9 @@
+discard """
+  targets:  "wasm"
+  action:   "run"
+  timeout:  60.0
+"""
+
 proc check[T](x:T) {.header:"glue", importc:"assert".}
 
 type A = ref object

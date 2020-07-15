@@ -1,3 +1,9 @@
+discard """
+  targets:  "wasm"
+  action:   "run"
+  timeout:  60.0
+"""
+
 proc log[T](x:T) {.header:"glue", importc:"log".}
 proc check[T](x:T) {.header:"glue", importc:"assert".}
 var c = 1234

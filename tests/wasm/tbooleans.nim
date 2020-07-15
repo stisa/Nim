@@ -1,3 +1,10 @@
+discard """
+  cmd:      "nim wasm -r $options $file"
+  targets:  "wasm"
+  action:   "run"
+  timeout:  60.0
+"""
+
 proc check(x:bool) {.header:"glue", importc:"assert".}
 
 var t = true

@@ -946,8 +946,12 @@ proc gen(w: WasmGen, n: PNode): WasmNode =
       else:
         result = newIfElse(w.gen(n[bidx][0]),w.gen(n[bidx][1]), result)
   of nkDiscardStmt:
-    if n.sons[0].kind != nkEmpty:
-      w.config.internalError("TODO: evaluate discarded statement")
+    if n.sons[0].kind != nkEmpty and n.sons[0].kind notin nkLiterals:
+      echo $n.kind
+      echo $n.sons[0].kind
+      echo w.config.treeToYaml(n.sons[0])
+      result = w.gen(n.sons[0])
+      #w.config.internalError("TODO: evaluate discarded statement")
   else:
     #echo $n.kind
     w.config.internalError("missing gen case: " & $n.kind)

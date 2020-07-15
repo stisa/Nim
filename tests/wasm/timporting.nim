@@ -1,3 +1,9 @@
+discard """
+  targets:  "wasm"
+  action:   "run"
+  timeout:  60.0
+"""
+
 proc log(x:bool) {.header:"glue", importc:"log".}
 var 
   i = 30
