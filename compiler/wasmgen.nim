@@ -976,8 +976,11 @@ proc putInitFunc(w: WasmGen) =
 #-------------linker-----------------------------------#
 proc linkPass(mainModuleFile:string, w:WasmGen) =
   echo "genloaders..." & mainModuleFile
+  
   #TODO: allow user defined glue
-  if optRun in w.config.globalOptions:
+  if optRun in w.config.globalOptions or w.config.isDefined("testing"):
+    # -d:testing is set by testament when running tests
+
     # generate a js file suitable to be run by node
     writeFile(mainModuleFile.changeFileExt("js"), w.config.getConfigVar("glue.loaderNode") % [w.s.name.s, w.config.getConfigVar("glue.jsHelpers") % [w.s.name.s]])
     # TODO: removeme
@@ -1008,10 +1011,10 @@ proc myClose(graph: ModuleGraph; b: PPassContext, n: PNode): PNode =
     
     let f = w.config.prepareToWriteOutput
     linkPass($f, w)  
-    echo "out" & $f
+    #echo "out " & $f
     writeFile($f.changeFileExt("json"), render(w.m))
     encode(w.m).writeTo($f)
-
+    
 proc myOpen(graph: ModuleGraph; s: PSym): PPassContext =
   echo "# begin myOpen ",graph.config.toFilename(s.info.fileIndex)," s.name: ",$s.name.s
   if genCtx.isNil: genCtx = newWasmGen(s, graph)

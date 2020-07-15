@@ -898,3 +898,5 @@ proc cmp*[T](x, y: T): int =
   if x == y: return 0
   if x < y: return -1
   return 1
+
+{.pop.}

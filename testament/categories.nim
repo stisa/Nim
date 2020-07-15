@@ -295,17 +295,6 @@ proc wasmTests(r: var TResults, cat: Category, options: string) =
 
   for t in os.walkFiles("tests/wasm/t*.nim"):
     test(t)
-  for testfile in ["exception/texceptions", "exception/texcpt1",
-                   "exception/texcsub", "exception/tfinally",
-                   "exception/tfinally2", "exception/tfinally3",
-                   "actiontable/tactiontable", "method/tmultimjs",
-                   "varres/tvarres0", "varres/tvarres3", "varres/tvarres4",
-                   "varres/tvartup", "misc/tints", "misc/tunsignedinc",
-                   "async/tjsandnativeasync"]:
-    test "tests/" & testfile & ".nim"
-
-  for testfile in ["strutils", "json", "random", "times", "logging"]:
-    test "lib/pure/" & testfile & ".nim"
 
 # ------------------------- nim in action -----------
 
@@ -725,6 +714,8 @@ proc processCategory(r: var TResults, cat: Category,
       discard
     else:
       jsTests(r, cat, options)
+  of "wasm":
+    wasmTests(r, cat, options)
   of "dll":
     dllTests(r, cat, options)
   of "flags":

@@ -1,5 +1,4 @@
 discard """
-  cmd:      "nim wasm -r $options $file"
   targets:  "wasm"
   action:   "run"
   timeout:  60.0
