@@ -2,7 +2,7 @@ from wasmast import WasmNode, WasmExternalKind, WasmValueType
 
 type
   WAsmModule* = ref object
-    name: string
+    name*: string
     imports*: seq[WAsmImport]
     functions*: seq[WAsmFunction]
     exports*: seq[WAsmExport]
@@ -41,6 +41,7 @@ type
   WAsmData* = ref object
     idx: Natural
     payload*: seq[byte]
+    name*: string # optional, used for debug
     # kind: WasmValueType
 
 proc newType*(rs: WasmValueType,
@@ -74,8 +75,8 @@ proc newMemory*(pages: Natural = 1): WAsmMemory =
 proc id*(m: WAsmMemory): Natural = m.idx
 proc pages*(m: WAsmMemory): Natural = m.pages
 
-proc newData*(id: Natural, payload: openArray[byte]): WAsmData = #, kind: WasmValueType
-  WAsmData(idx: id, payload: @payload) #, kind: kind)
+proc newData*(id: Natural, payload: openArray[byte], name:string = ""): WAsmData = #, kind: WasmValueType
+  WAsmData(idx: id, payload: @payload, name: name) #, kind: kind)
 proc index*(d: WAsmData): Natural = d.idx
 
 proc newModule*(nm: string=""): WAsmModule = 
@@ -86,4 +87,4 @@ proc newModule*(nm: string=""): WAsmModule =
   result.data = @[]
   result.memory = newMemory(0)
   
-proc name*(m: WAsmModule): string = m.name
+#proc name*(m: WAsmModule): string = m.name

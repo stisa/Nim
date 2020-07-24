@@ -60,26 +60,26 @@ proc render*(n: WasmNode, indlv = 0): string =
   of woBlock, woLoop, woIf: 
     #sig*: WasmValueType # vtNone === Pseudo
     result = """{
-  "opcode": $1, 
+  "opcode": "$1", 
   "sons": $2
 }""" % [$n.kind, render(n.sons, indlv)]
   of woBr, woBrIf:
     #relativeDepth*: Natural
     result = """{
-  "opcode": $1, 
+  "opcode": "$1", 
   "sons": $2
 }""" % [$n.kind, render(n.sons, indlv)]
   of woBrTable:
     #targetTable*: seq[Natural]
     #default*: Natural
     result = """{
-  "opcode": $1, 
+  "opcode": "$1", 
   "sons": $2
 }""" % [$n.kind, render(n.sons, indlv)]
   of woCall:
     result = """{
-  "opcode": $1,
-  "fnIndex": $3, "imported": $4
+  "opcode": "$1",
+  "fnIndex": $3, "imported": $4,
   "sons": $2
 }""" % [$n.kind, render(n.sons, indlv), $n.funcIndex, $n.isImport]
     #funcIndex* : Natural
@@ -88,12 +88,12 @@ proc render*(n: WasmNode, indlv = 0): string =
     #typeIndex*: Natural
     #reserved*: Natural # 0 in MVP
     result = """{
-  "opcode": $1, 
+  "opcode": "$1", 
   "sons": $2
 }""" % [$n.kind, render(n.sons, indlv)]
   of woGetLocal, woSetLocal, woTeeLocal, woGetGlobal, woSetGlobal:
     result = """{
-  "opcode": $1,
+  "opcode": "$1",
   "index": $3,
   "sons": $2
 }""" % [$n.kind, render(n.sons, indlv), $n.index]
@@ -102,39 +102,39 @@ proc render*(n: WasmNode, indlv = 0): string =
     #align*: Natural # log2(alignment)
     #offset*: Natural
     result = """{
-  "opcode": $1,
+  "opcode": "$1",
   "align": $3, "offset": $4,
   "sons": $2
 }""" % [$n.kind, render(n.sons, indlv), $n.align, $n.offset]
   of memSize, memGrow: 
     #memReserved*: Natural
     result = """{
-  "opcode": $1,
+  "opcode": "$1",
   "sons": $2
 }""" % [$n.kind, render(n.sons, indlv)]
   of constI32, constI64:
     result = """{
-  "opcode": $1,
+  "opcode": "$1",
   "value": $3,
   "sons": $2
 }""" % [$n.kind, render(n.sons, indlv), $n.intVal]
   of constUI32, constUI64:
     result = """{
-  "opcode": $1,
+  "opcode": "$1",
   "value": $3,
   "sons": $2
 }""" % [$n.kind, render(n.sons, indlv), $n.uintVal]
   of constF32, constF64:
     result = """{
-  "opcode": $1,
+  "opcode": "$1",
   "value": $3,
   "sons": $2
   }""" % [$n.kind, render(n.sons, indlv), $n.floatVal]
   else:
     result = """{
-  "opcode": $1, 
+  "opcode": "$1", 
   "sons": $2
-}""" % [$n.kind, render(n.sons, indlv)]
+}""" % [ $n.kind, render(n.sons, indlv)]
   result = result.indent(indlv)
 
 proc render*(i: WAsmImport, indlv = 0): string =
@@ -157,7 +157,7 @@ proc render*(m: WAsmMemory, indlv = 0): string =
   result = result.indent(indlv)
 
 proc render*(d: WAsmData, indlv = 0): string =
-  result = """{ "index": $1, "payload": $2 }""" % [$d.index, render(d.payload)]
+  result = """{ "name": "$3", "index": $1, "payload": $2 }""" % [$d.index, render(d.payload), d.name]
   result = result.indent(indlv)
 
 proc render*(f: WAsmFunction, indlv = 0): string =
