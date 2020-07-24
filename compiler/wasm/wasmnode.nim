@@ -126,3 +126,6 @@ proc newIfElse*(cond:WasmNode, then:WasmNode, other:WasmNode):WasmNode =
 proc newOpList*(ops: varargs[WasmNode]): WasmNode =
   result = newWANode(opList)
   result.sons = @ops
+
+#proc newOpEmpty*(): WasmNode =
+#  result = newWANode(opEmpty)

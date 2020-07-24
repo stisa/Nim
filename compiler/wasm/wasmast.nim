@@ -100,7 +100,7 @@ type
     #  Rel
     frEq64, frNe64, frLt64, frGt64, frLe64, frGe64,
 
-    opList, constUI32, constUI64
+    opList, constUI32, constUI64 #, #opEmpty
   
 const 
   MemLoad* = {
@@ -148,7 +148,7 @@ type
     else:
       discard
     sons*: seq[WasmNode]  # If kind == opList, the actual operations are stored here.
-                    # Otherwise this olds args ( eg for binaryOp etc )
+                          # Otherwise this holds args ( eg for binaryOp etc )
 
 const
   UnaryOp* = {

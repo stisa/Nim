@@ -371,12 +371,27 @@ proc genProc(b: Backend, n: PNode, conf: ConfigRef) =
   else:
     echo "#GNP: nim proc aren't generated yet, proc: ", n.sym.name.s, " module: ", conf.toFilename(n.info.fileIndex)
 
-  
+proc genLit(b: Backend, n: PNode, conf: ConfigRef, parentKind: TNodeKind): WasmNode =
+  echo "#GNL literal of kind ", n.kind
+    
+  var typ = n.typ
+  echo "#LOAD type ", typ.kind
+  case n.kind:
+  of nkLiterals-(nkFloatLiterals+nkStrKinds):
+    # Integer like
+    result = newConst(n.getInt.toInt32) # TODO: differnt int /kinds
+  of nkFloatLiterals:
+    # Floats
+    result = newConst(n.getFloat) # different float sizes
+  else:
+    echo "#GNL TODO other literals"
+
 
 
 proc gen(b: Backend, n: PNode, conf: ConfigRef, parentKind: TNodeKind=nkNone): WasmNode =
   echo "#GTL: ", $n.kind, " parent: ", parentKind, " module: ", conf.toFilename(n.info.fileIndex)
   # TODO: go through https://nim-lang.org/docs/macros.html#statements for inspirationn
+  result = newOpList() # try to fix crashes due to nil
   case n.kind:
   of nkGenSkippedKinds: discard
   of nkCallKinds: # may be missing some kinds, TODO: check
@@ -445,11 +460,13 @@ proc gen(b: Backend, n: PNode, conf: ConfigRef, parentKind: TNodeKind=nkNone): W
     echo "#GTL loading from sym ", n.sym.name.s
     echo conf.symToYaml(n.sym)
     result = newLoad(conf.mapLoadKind(n.sym.typ), 0, 1, n.symLoc)
+  of nkLiterals: #TODO: other literals
+    result = b.genLit(n, conf, parentKind)
   of nkStmtList:
     result = newOpList()
     for son in n.sons:
       let tmp = b.gen(son, conf, n.kind)
-      if not tmp.isNil: 
+      if not tmp.isNil and not(tmp.kind == opList and tmp.sons.len == 0): 
         # since some nkKinds are skipped, we produce nil nodes. 
         #TODO: fix that instead of using this workaround
         result.sons.add(tmp)

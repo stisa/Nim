@@ -38,14 +38,15 @@ proc render(t: WasmType, indlv = 0): string =
     else:
       pars.add(render(p) & ", ")
 
-  result = """{ "params": $1, "result": $2 }""" % [pars, res]
-  result = result.indent(indlv)
+  result = """{ "params": [$1], "result": $2 }""" % [pars, res]
+  result = result.indent(indlv)  
 
 proc render*(sn: seq[WasmNode], indlv = 0): string =
   if sn.len == 0: return "[]" # TODO: fix isNil changes properly
   var sons = ""
 
   for i, s in sn:
+    
     add sons, render(s,indlv)
     if i != sn.len-1: add sons, ",\n"
 
