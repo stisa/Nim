@@ -289,7 +289,7 @@ proc genProc(b: Backend, n: PNode, conf: ConfigRef) =
   #echo conf.treeToYaml(n)
   #echo conf.symToYaml(n.sym)
   let procDef = n.sym.ast
-  assert(procDef.kind == nkProcDef )
+  assert(procDef.kind == nkProcDef)
 
   # Build the type signature of this proc in wasm land
   let procparams = procDef[paramsPos] # the list of nkFormalParams
@@ -379,10 +379,17 @@ proc genLit(b: Backend, n: PNode, conf: ConfigRef, parentKind: TNodeKind): WasmN
   case n.kind:
   of nkLiterals-(nkFloatLiterals+nkStrKinds):
     # Integer like
-    result = newConst(n.getInt.toInt32) # TODO: differnt int /kinds
+    if n.typ.kind in tyUInt..tyUInt64:
+      result = newConst(n.getInt.toUInt32)
+    else:
+      result = newConst(n.getInt.toInt32) # TODO: differnt int / kinds
   of nkFloatLiterals:
     # Floats
-    result = newConst(n.getFloat) # different float sizes
+    if n.typ.kind == tyFloat32:
+      result = newConst(n.getFloat.float32)
+    else:
+      result = newConst(n.getFloat.float64) # float 128??
+    # a string literal is basically an array of bytes? TODO:
   else:
     echo "#GNL TODO other literals"
 
