@@ -89,7 +89,6 @@ type                          # please make sure we have under 32 options
                               # implementation
     optOwnedRefs              # active if the Nim compiler knows about 'owned'.
     optMultiMethods
-    optNimV019
     optBenchmarkVM            # Enables cpuTime() in the VM
     optProduceAsm             # produce assembler code
     optPanics                 # turn panics (sysFatal) into a process termination
@@ -163,6 +162,7 @@ type
       ## which itself requires `nimble install libffi`, see #10150
       ## Note: this feature can't be localized with {.push.}
     vmopsDanger,
+    strictFuncs
 
   LegacyFeature* = enum
     allowSemcheckedAstModification,
@@ -235,6 +235,7 @@ type
     options*: TOptions    # (+)
     globalOptions*: TGlobalOptions # (+)
     macrosToExpand*: StringTableRef
+    arcToExpand*: StringTableRef
     m*: MsgConfig
     evalTemplateCounter*: int
     evalMacroCounter*: int
@@ -371,7 +372,7 @@ const
   DefaultOptions* = {optObjCheck, optFieldCheck, optRangeCheck,
     optBoundsCheck, optOverflowCheck, optAssert, optWarns, optRefCheck,
     optHints, optStackTrace, optLineTrace, # consider adding `optStackTraceMsgs`
-    optTrMacros, optStyleCheck, optSinkInference}
+    optTrMacros, optStyleCheck}
   DefaultGlobalOptions* = {optThreadAnalysis,
     optExcessiveStackTrace, optListFullPaths}
 
@@ -410,6 +411,7 @@ proc newConfigRef*(): ConfigRef =
     options: DefaultOptions,
     globalOptions: DefaultGlobalOptions,
     macrosToExpand: newStringTable(modeStyleInsensitive),
+    arcToExpand: newStringTable(modeStyleInsensitive),
     m: initMsgConfig(),
     evalExpr: "",
     cppDefines: initHashSet[string](),
