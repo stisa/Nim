@@ -16,7 +16,7 @@ import
   llstream, strutils, os, ast, lexer, syntaxes, options, msgs,
   condsyms, times,
   sem, idents, passes, extccomp,
-  cgen, json, nversion,
+  cgen, json, nversion, dumpir,
   platform, nimconf, passaux, depends, vm, idgen,
   modules,
   modulegraphs, tables, rod, lineinfos, pathutils, vmprofiler
@@ -50,6 +50,13 @@ proc commandGenDepend(graph: ModuleGraph) =
       changeFileExt(project, "png").string &
       ' ' & changeFileExt(project, "dot").string)
 
+proc commandDumpIr(graph: ModuleGraph) =
+  if graph.config.outFile.isEmpty:
+      graph.config.outFile = RelativeFile(graph.config.projectName & ".ir.nim")  
+  semanticPasses(graph)
+  registerPass(graph, dumpirpass)
+  compileProject(graph)
+    
 proc commandCheck(graph: ModuleGraph) =
   graph.config.setErrorMaxHighMaybe
   defineSymbol(graph.config.symbols, "nimcheck")
@@ -344,6 +351,8 @@ proc mainCommand*(graph: ModuleGraph) =
       ]
 
       msgWriteln(conf, $dumpdata, {msgStdout, msgSkipHook})
+    elif isDefined(conf, "ir"):
+      commandDumpIr(graph)
     else:
       msgWriteln(conf, "-- list of currently defined symbols --",
                  {msgStdout, msgSkipHook})
