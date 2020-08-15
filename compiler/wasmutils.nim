@@ -21,15 +21,77 @@ proc getPragmaStmt*(n: PNode, w: TSpecialWord): PNode =
 proc stmtsContainPragma*(n: PNode, w: TSpecialWord): bool =
   result = getPragmaStmt(n, w) != nil
 
+
+#[
+proc mapType(conf: ConfigRef; typ: PType): TCTypeKind =
+  ## Maps a Nim type to a C type
+  case typ.kind
+  of tyNone, tyTyped: result = ctVoid
+  of tyBool: result = ctBool
+  of tyChar: result = ctChar
+  of tyNil: result = ctPtr
+  of tySet: result = mapSetType(conf, typ)
+  of tyOpenArray, tyArray, tyVarargs, tyUncheckedArray: result = ctArray
+  of tyObject, tyTuple: result = ctStruct
+  of tyUserTypeClasses:
+    doAssert typ.isResolvedUserTypeClass
+    return mapType(conf, typ.lastSon)
+  of tyGenericBody, tyGenericInst, tyGenericParam, tyDistinct, tyOrdinal,
+     tyTypeDesc, tyAlias, tySink, tyInferred, tyOwned:
+    result = mapType(conf, lastSon(typ))
+  of tyEnum:
+    if firstOrd(conf, typ) < 0:
+      result = ctInt32
+    else:
+      case int(getSize(conf, typ))
+      of 1: result = ctUInt8
+      of 2: result = ctUInt16
+      of 4: result = ctInt32
+      of 8: result = ctInt64
+      else: result = ctInt32
+  of tyRange: result = mapType(conf, typ[0])
+  of tyPtr, tyVar, tyLent, tyRef:
+    var base = skipTypes(typ.lastSon, typedescInst)
+    case base.kind
+    of tyOpenArray, tyArray, tyVarargs, tyUncheckedArray: result = ctPtrToArray
+    of tySet:
+      if mapSetType(conf, base) == ctArray: result = ctPtrToArray
+      else: result = ctPtr
+    else: result = ctPtr
+  of tyPointer: result = ctPtr
+  of tySequence: result = ctNimSeq
+  of tyProc: result = if typ.callConv != ccClosure: ctProc else: ctStruct
+  of tyString: result = ctNimStr
+  of tyCString: result = ctCString
+  of tyInt..tyUInt64:
+    result = TCTypeKind(ord(typ.kind) - ord(tyInt) + ord(ctInt))
+  of tyStatic:
+    if typ.n != nil: result = mapType(conf, lastSon typ)
+    else: doAssert(false, "mapType")
+  else: doAssert(false, "mapType")
+
+proc mapReturnType(conf: ConfigRef; typ: PType): TCTypeKind =
+  #if skipTypes(typ, typedescInst).kind == tyArray: result = ctPtr
+  #else:
+  result = mapType(conf, typ)
+]#
+
+const
+  irrelevantForBackend = {tyGenericBody, tyGenericInst, tyGenericInvocation,
+                          tyDistinct, tyRange, tyStatic, tyAlias, tySink,
+                          tyInferred, tyOwned, tyGenericParam}
+
+const allTypes = {tyNone..tyVoid}
 proc mapType*(c: ConfigRef, tt:PType):WasmValueType =
-  let t = if not tt.isNil: tt.skipTypes(abstractVarRange) else: tt
+  #echo c.typeToYaml(tt)
+  let t = if not tt.isNil: tt.skipTypes(allTypes-ConcreteTypes) else: tt
   if t.isNil: return vtNone
   case t.kind:
   #of tyBool,tyInt,tyInt32,tyUInt32,tyUInt,tyUInt8,tyInt16,
   #  tyString, tyPointer, tySequence, tyArray, tyProc,
   #  tyOrdinal, tyVar, tyOpenArray, tyObject, tyChar:
   of tyBool,tyChar, tyInt..tyInt32, tyUInt..tyUInt32,
-    tyString, tyPtr, tyRef, tyPointer, tyObject, tySet,
+    tyString, tyPtr, tyRef, tyPointer, tyVar, tyObject, tySet,
     tySequence, tyEnum, tyArray:
     result = vtI32
   of tyFloat32:

@@ -1,6 +1,6 @@
 import
   ast, astalgo, options, msgs, idents, types, passes,
-  ropes, wordrecg, modulepaths,
+  ropes, wordrecg, modulepaths, transf,
   tables, os, strutils, pathutils,
   wasm/[wasmast, wasmstructure, wasmencode, wasmnode, wasmleb128, wasmrender], wasmutils
 
@@ -29,8 +29,14 @@ type
     generatedTypeInfos: Table[string, int32] # name, location in memory
     locs: tuple[stack,heap:int32] # stack pointers location, used in procs? stack is Used as compile time stack ptr
 
-# this is to persist the backend between modules, 
-# otherwise it would get reinited at every myOpen of a new module
+
+const
+  irrelevantForBackend = {tyGenericBody, tyGenericInst, tyGenericInvocation,
+                          tyDistinct, tyRange, tyStatic, tyAlias, tySink,
+                          tyInferred, tyOwned}
+
+#proc typeName(typ: PType): Rope =
+#  let typ = typ.skipTypes(irrelevantForBackend)
 
 proc newBackend(modulename:string): Backend =
   result = Backend(
@@ -64,10 +70,24 @@ proc updateLoc(s: PSym, loc: int, kind: TLocKind) =
   s.loc.pos = loc
   s.loc.r = loc.rope # for debug purposes
 
+proc getLoc(s: PNode): int =
+  # TODO: if sym is a param, this should be:
+  # result = newGet(woGetLocal, s.position) or something like that
+  if s.sym.loc.k == locGlobalVar:
+    result = s.sym.loc.pos
+  else:
+    echo "#getloc: TODO: other than global"
+
+
 proc symLoc(s: PNode): WasmNode =
   # TODO: if sym is a param, this should be:
   # result = newGet(woGetLocal, s.position) or something like that
-  result = newConst(s.sym.loc.pos)
+  if s.sym.kind == skParam:
+    result = newGet(woGetLocal, s.sym.position)
+  elif s.sym.loc.k == locGlobalVar:
+    result = newGet(woGetGlobal, s.sym.loc.pos)
+  else:
+    echo "#symloc: TODO: other than global"
 
 proc hasProc(b: Backend, sym: PSym): bool =
   sym.mangleName in b.generatedProcs
@@ -75,6 +95,9 @@ proc hasProc(b: Backend, sym: PSym): bool =
 proc getProc(b: Backend, sym: PSym): tuple[id: int, imported: bool] =
   b.generatedProcs[sym.mangleName]
 
+# this is to persist the backend between modules, 
+# otherwise it would get reinited at every myOpen of a new module
+# TODO: move logic for this  in open...
 var backend: Backend = newBackend("main")
 
 proc newWasmGen(s:PSym, g: ModuleGraph): WasmGen =
@@ -119,11 +142,16 @@ proc storeLit(b: Backend, n: PNode, conf: ConfigRef): WasmNode =
   b.m.data.add(newData(b.stackptr, dataseg, n.sons[0].sym.name.s))
   b.moveStackPtrBy(dataseg.len) # TODO: alignTo4 ??? 
 
-const nkGenSkippedKinds = {nkCommentStmt, nkTypeSection, nkPragma, nkEmpty,
-  nkTemplateDef, nkProcDef, nkMacroDef, nkIncludeStmt}
+const nkGenSkippedKinds = { nkCommentStmt, nkPragma, nkEmpty, 
+                            nkTemplateDef, nkFuncDef, nkProcDef, nkMethodDef, 
+                            nkIteratorDef, nkMacroDef, nkIncludeStmt, 
+                            nkImportStmt, nkExportStmt, nkExportExceptStmt, 
+                            nkImportExceptStmt, nkImportAs, nkConverterDef,
+                            nkIncludeStmt, nkTypeSection}#, nkWhenStmt, nkWhenExpr }
 
 const nkSectionKinds = {nkVarSection, nkConstSection, nkLetSection}
 
+proc gen(w: WasmGen, n: PNode, conf: ConfigRef, parentKind: TNodeKind=nkNone): WasmNode
 
 #[
     nkCommand,            # a call like ``p 2, 4`` without parenthesis
@@ -283,70 +311,40 @@ const nkSectionKinds = {nkVarSection, nkConstSection, nkLetSection}
     nkTupleConstr         # a tuple constructor
 
 ]#
+proc exportOrUsed(s: PSym): bool =
+  ( s.flags.contains(sfExported) and 
+    s.skipGenericOwner.flags.contains(sfMainModule)
+  ) or s.flags.contains(sfUsed)
 
-proc genProc(b: Backend, n: PNode, conf: ConfigRef) =
+proc callMagic(w:WasmGen, n: PNode, magic:TMagic): WasmNode =
+  echo "#MAGIC: ", magic
+  echo w.config.treeToYaml(n)
+  case magic:
+  of mAddF64: result = newBinaryOp(fbAdd64, w.gen(n.sons[1],w.config), w.gen(n.sons[2],w.config))
+  else:
+    echo "TODO magic", magic
+proc genProc(w: WasmGen, n: PNode, conf: ConfigRef) =
   echo "#GNP: ", $n.kind, " module: ", conf.toFilename(n.info.fileIndex)
   #echo conf.treeToYaml(n)
   #echo conf.symToYaml(n.sym)
   let procDef = n.sym.ast
+  #echo conf.typeToYaml(n.sym.typ)
   assert(procDef.kind == nkProcDef)
-
+  let b = Backend(w.graph.backend)
   # Build the type signature of this proc in wasm land
-  let procparams = procDef[paramsPos] # the list of nkFormalParams
+  # note that for type sign purposes, the prc.sym.typ.sons are better than using formalparams of ast
+  let procparams = n.sym.typ.sons # the list of types for params
+
     # body = s.getBody() TODO:
   
   var proctype : WasmType #= newType(rs=res) # The complete type of the proc in wasm land
     
   for i, par in procparams:
     if i == 0:
-      proctype = newType(rs=conf.mapType(par.typ)) # instantiate the proc type with the result type
-      continue # end the loop here
-    var p: WasmValueType
-    if par.kind == nkIdentDefs:
-      if par.len > 3:
-        for i in 0..<par.len-2: # eg a,b: int
-          p = conf.mapType(par[^2].typ)
-      else:
-        var typ: PType = par[1].typ
-        if par[2].kind != nkEmpty:
-          if par[2].kind == nkDotExpr:
-            typ = par[2][0].typ
-        p = conf.mapType(typ)
-    elif par.kind == nkSym:
-      p = conf.mapType(par.sym.typ)
-    elif par.kind == nkEmpty: continue
-    else:
-      conf.internalError("# unknown putProc par kind: " & $par.kind)
-    proctype.params.add(p)
+      proctype = newType(rs=conf.mapType(par)) # instantiate the proc type with the result type
+      continue # move to next par
+    proctype.params.add(conf.mapType(par))
 
-  #[ for i, p in params.mpairs:
-    #   let par = procparams[i+1]
-    #   if par.kind == nkIdentDefs:
-    #     if par.len > 3:
-    #       for i in 0..<par.len-2: # eg a,b: int
-    #         p = conf.mapType(par[^2].typ)
-    #     else:
-    #       var typ: PType = par[1].typ
-    #       if par[2].kind != nkEmpty:
-    #         if par[2].kind == nkDotExpr:
-    #           typ = par[2][0].typ
-    #       p = conf.mapType(typ)
-    #   elif par.kind == nkSym:
-    #     p = conf.mapType(par.sym.typ)
-    #   elif par.kind == nkEmpty: continue
-    #   else:
-    #     conf.internalError("# unknown putProc par kind: " & $par.kind)
-    #   proctype.params.add(p)
-    
-    # if not s.typ.sons[0].isNil:
-    #   # since wasm allows shadowing of params with local vars, this
-    #   # tries to make sure result gets its very own var after all
-    #   # params have theirs. Also make the symbol remember it so
-    #   # we don't need a map from result to its position
-    #   assert s.ast[resultPos].sym.kind == skResult
-    #   s.ast[resultPos].sym.position = params.len
-  ]#
-  
   if n.sym.flags.contains(sfImportc):
     # an imported proc (from wasmglue.cfg)
     let pragmas = procDef[pragmasPos]
@@ -366,14 +364,31 @@ proc genProc(b: Backend, n: PNode, conf: ConfigRef) =
     )
     # the id of the proc is the import id, because we can then hoist it in a later phase
     # by simply having non-imports start from last(importId), eg id = nextImportIdx+nextFuncIdx
-    b.generatedProcs.add(n.sym.mangleName, (b.nextImportIdx, true))
+    b.generatedProcs[n.sym.mangleName] = (b.nextImportIdx, true)
     inc b.nextImportIdx
   else:
-    echo "#GNP: nim proc aren't generated yet, proc: ", n.sym.name.s, " module: ", conf.toFilename(n.info.fileIndex)
-
-proc genLit(b: Backend, n: PNode, conf: ConfigRef, parentKind: TNodeKind): WasmNode =
-  echo "#GNL literal of kind ", n.kind
+    echo "#GNP: nim proc aren't really generated yet, proc: ", n.sym.name.s, " module: ", conf.toFilename(n.info.fileIndex)
+    # TODO:
+    var wasmProcBody: WasmNode
+    var transfBody = transformBody(w.graph, procDef[namePos].sym, cache=false)
+    wasmProcBody = w.gen(transfBody, conf)
+    b.m.functions.add(
+      newFunction(
+        b.nextFuncIdx, proctype,
+        wasmProcBody, @[]#[params?]#, procDef[namePos].sym.name.s, 
+        procDef[namePos].sym.flags.contains(sfExported)
+      )
+    )
     
+    b.generatedProcs[n.sym.mangleName] = (b.nextFuncIdx, false)
+    inc b.nextFuncIdx
+    
+    #echo conf.treeToYaml(transfBody) 
+    
+
+proc genLit(w: WasmGen, n: PNode, conf: ConfigRef, parentKind: TNodeKind): WasmNode =
+  echo "#GNL literal of kind ", n.kind
+  let b = Backend(w.graph.backend)  
   var typ = n.typ
   echo "#LOAD type ", typ.kind
   case n.kind:
@@ -390,35 +405,62 @@ proc genLit(b: Backend, n: PNode, conf: ConfigRef, parentKind: TNodeKind): WasmN
     else:
       result = newConst(n.getFloat.float64) # float 128??
     # a string literal is basically an array of bytes? TODO:
+  of nkStrKinds:
+    result = newConst(b.stackptr)
+    # TODO: also store rest of stuff in initexprs
   else:
     echo "#GNL TODO other literals"
 
+proc genAsgn(w: WasmGen, n: PNode, conf: ConfigRef,): WasmNode =
+  #TODO:
+  echo conf.treeToYaml(n)
+  var ns = n.sons[0].skipHidden()
+  
+  if ns.kind != nkSym: 
+    echo "# asgn not a sym but ", ns.kind
+  if ns.sym.typ.kind == tyVar:
+    # need to treat it as a pointer
+    result = newStore(conf.mapStoreKind(ns.sym.typ.skipTypes({tyVar})),w.gen(n.sons[1], conf, n.kind), 0, ns.symLoc)
+  else:
+    echo "# asgn to non var TODO:"
+    result = newSet(woSetGlobal, ns.getLoc, w.gen(n.sons[1], conf, n.kind))
+    #if n[0].kind == nkSym:
+#    if n[0].sym.kind == skParam:
 
+#  if sym is skparam -> use params (need to use params when in gen nkSym too)
+#  else: normal asgn using load global
 
-proc gen(b: Backend, n: PNode, conf: ConfigRef, parentKind: TNodeKind=nkNone): WasmNode =
-  echo "#GTL: ", $n.kind, " parent: ", parentKind, " module: ", conf.toFilename(n.info.fileIndex)
+proc gen(w: WasmGen, n: PNode, conf: ConfigRef, parentKind: TNodeKind=nkNone): WasmNode =
   # TODO: go through https://nim-lang.org/docs/macros.html#statements for inspirationn
   result = newOpList() # try to fix crashes due to nil
+  if n.kind in nkGenSkippedKinds: return
+  let b = Backend(w.graph.backend)
+  echo "#GTL: ", $n.kind, " parent: ", parentKind, " module: ", conf.toFilename(n.info.fileIndex)
   case n.kind:
   of nkGenSkippedKinds: discard
   of nkCallKinds: # may be missing some kinds, TODO: check
     # 0-> proc sym, 1..->arg(s)
     echo "#GTL call kind ", n.kind
+
+    if n.sons[0].sym.magic != mNone:
+      return callMagic(w, n, n.sons[0].sym.magic)
+
     if not b.hasProc(n.sons[0].sym) :
       #TODO: generate proc for non imported procs
-      b.genProc(n.sons[0], conf)
+      w.genProc(n.sons[0], conf)
     let (id, isImport) = b.getProc(n.sons[0].sym)
     var args : seq[WasmNode] = @[]
     if n.sons.len > 1: # at least 1 argument
       for i, arg in n.sons:
         if i == 0: continue # skip first arg (should be nkSym of the proc)
-        args.add(b.gen(arg, conf, n.kind))
+        args.add(w.gen(arg, conf, n.kind))
 
     result = newCall(id, args, isImport)
   of nkSectionKinds:
     # sons: identdefs
     for son in n.sons:
-      discard b.gen(son, conf, n.kind)
+      # discard since this goes directly in the globals part of the module
+      discard w.gen(son, conf, n.kind)
     #echo conf.treeToYaml(n)
   of nkIdentDefs, nkConstDef:
     # sons: 0->symbol, 1->type, 2->val
@@ -429,60 +471,90 @@ proc gen(b: Backend, n: PNode, conf: ConfigRef, parentKind: TNodeKind=nkNone): W
     #       hopefully they will still have sfUsed?
     let s = n.sons[0].sym
 
-    if (s.flags.contains(sfExported) and s.skipGenericOwner.flags.contains(sfMainModule)) or 
-        s.flags.contains(sfUsed):
+    if s.exportOrUsed:
       
-      s.updateLoc(b.stackptr, locGlobalVar) # TODO: consider non globals/stack/heap?
+      s.updateLoc(b.nextGlobalIdx, locGlobalVar) # TODO: consider non globals/stack/heap?
+      let mut = if parentKind == nkVarSection: true else: false
 
       # if sons[2](aka val) is nkEmpty, we can skip the generation by just moving 
       # the stack pointer by size(type), otherwise we actually have to perform the store
-      if n.sons[2].kind == nkEmpty:
-        echo "#GTL elided store due to empty val ", s.name.s
-        b.moveStackPtrBy(s.typ.size)
-      elif n.sons[2].kind in nkLiterals:
-        b.initExprs.add(b.storeLit(n, conf))  # TODO: initexprs part is useless for literals?
+      if n.sons[2].kind in {nkEmpty, nkNilLit} :
+        # TODO: match the type and value type
+        b.m.globals.add(newGlobal(b.nextGlobalIdx, conf.mapType(s.typ), newConst(0'i32), mut, n[0].sym.mangleName))  
+        
+      #  echo "#GTL elided store due to empty val ", s.name.s
+      #  b.moveStackPtrBy(s.typ.size)
+      elif n.sons[2].kind in nkLiterals-nkStrKinds:
+        # for numericals, just store in the global
+        b.m.globals.add(newGlobal(b.nextGlobalIdx, conf.mapType(s.typ), w.genLit(n.sons[2],conf, n.kind), mut, n[0].sym.mangleName))  
+                                              # TODO: initexprs part is useless for literals?
                                               # it may be useful for arrays? I doubt it.
       elif n.sons[2].kind in {nkCurly,nkBracket,nkObjConstr}:
         #TODO: non-literal store
-        echo "#GTL non literal store", n.sons[2].kind, " for ", s.name.s 
+        echo "#GTL non literal store ", n.sons[2].kind, " for ", s.name.s
+        #FIXME: 
+        b.m.globals.add(newGlobal(
+          b.nextGlobalIdx, 
+          conf.mapType(s.typ), 
+          newConst(b.stackptr.int32), 
+          mut, 
+          n[0].sym.mangleName)
+        )
       elif n.sons[2].kind == nkSym:
         echo "#GTL RHS is nkSym for ", s.name.s
-        echo conf.symToYaml(n.sons[2].sym)
+        #echo conf.symToYaml(n.sons[2].sym)
         if n.sons[2].sym.kind == skEnumField:
           # for skEnumField, sym.position is the ordinal value of the enum.
           # TODO: enum with holes?
-          b.initExprs.add(b.storeLit(n, conf))
+          b.m.globals.add(newGlobal(b.nextGlobalIdx, conf.mapType(s.typ), newConst(n.sons[2].sym.position.int32), mut, n[0].sym.mangleName))  
         else:
           echo "#GTL RHS nkSym missing kind :", n.sons[2].sym.kind
       else:
         echo "#GTL non literal RHS ", n.sons[2].kind, " for ", s.name.s
-        b.initExprs.add(b.gen(n.sons[2], conf, n.kind))
+        # FIXME:
+        b.m.globals.add(newGlobal(
+          b.nextGlobalIdx, 
+          conf.mapType(s.typ), 
+          newConst(b.stackptr.int32), 
+          mut, 
+          n[0].sym.mangleName)
+        )  
+        #TODO: b.initExprs.add(w.gen(n.sons[2], conf, n.kind))
+      inc b.nextGlobalIdx
+      echo "#nextglobalidx ", b.nextGlobalIdx
+      echo "#globals", b.m.globals.len
       #echo conf.symToYaml(n.sons[0].sym)
       #echo conf.typeToYaml(s.typ)
-      echo "#GTL: \n", conf.treeToYaml(n)
-    else:
-      echo "#GTL skipped unused sym ", n.sons[0].sym.name.s 
+      #echo "#GTL: \n", conf.treeToYaml(n)
+    #else:
+    #  echo "#GTL skipped unused sym ", n.sons[0].sym.name.s 
     #echo conf.treeToYaml(n)
   of nkSym:
     echo "#GTL loading from sym ", n.sym.name.s
-    echo conf.symToYaml(n.sym)
-    result = newLoad(conf.mapLoadKind(n.sym.typ), 0, 1, n.symLoc)
+    #echo conf.symToYaml(n.sym)
+    result = n.symLoc
   of nkLiterals: #TODO: other literals
-    result = b.genLit(n, conf, parentKind)
+    result = w.genLit(n, conf, parentKind)
   of nkStmtList:
     result = newOpList()
     for son in n.sons:
-      let tmp = b.gen(son, conf, n.kind)
+      let tmp = w.gen(son, conf, n.kind)
       if not tmp.isNil and not(tmp.kind == opList and tmp.sons.len == 0): 
         # since some nkKinds are skipped, we produce nil nodes. 
         #TODO: fix that instead of using this workaround
         result.sons.add(tmp)
+  of nkAsgn:
+    result = w.genAsgn(n, conf)
+  of nkHiddenDeref:
+    result = newLoad(conf.mapLoadKind(n.skipHidden.sym.typ.skipTypes({tyVar})), 0, 1, n.skipHidden.symLoc)
   else:
     echo "#GTL is missing kind: ", n.kind
 
 proc genInitFunc(b: Backend) =
   # Generate the init expression
-  if b.initExprs.len<1: return # no expression, no need for a init proc
+  if b.initExprs.len<1: 
+    echo "# Empty InitExprs"
+    return # no expression, no need for a init proc
   b.m.functions.add(
     newFunction(
       b.nextFuncIdx, newType(vtNone),  newOpList(b.initExprs), @[], "nimInit", true
@@ -506,12 +578,16 @@ proc myProcess(b: PPassContext, n: PNode): PNode =
   # nodes that I saw passing through here:
   # nkVarSection, nkStmtList, nkProcDef, nkEmpty
   var w = WasmGen(b)  
-  if passes.skipCodegen(w.config, n): return n
+  result = n
+  if passes.skipCodegen(w.config, n): return
   
-  echo "#WASM#>P ", $n.kind, " from ", w.config.toFilename(n.info.fileIndex)
   var backend = Backend(w.graph.backend)
+  var transfN = transformStmt(w.graph,w.s,n)
+  if transfN.kind in nkGenSkippedKinds: return
+
+  echo "#WASM#>P ", $n.kind, " from ", w.config.toFilename(n.info.fileIndex)  
+  let tmp = w.gen(transfN, w.config)
   #TODO: this may be wrong if for example n is nkCallKind and the owner of n is a skProc? Can that even go through myProcess?
-  let tmp = backend.gen(n, w.config)
   if not tmp.isNil:
     if not(tmp.kind == opList and tmp.sons.len == 0):
       # TODO: fix useless empty opLists, need a recursive check that at least a leaf node is not empty?
@@ -520,8 +596,8 @@ proc myProcess(b: PPassContext, n: PNode): PNode =
   #  echo w.config.treeToYaml(n)
   #  let generated = w.gen(n)
   #  if not generated.isNil: w.initExprs.add(generated)
-  result = n
-  echo "#WASM#<P ", $n.kind
+  
+  #echo "#WASM#<P ", $n.kind
 
 
 proc myClose(graph: ModuleGraph; b: PPassContext, n: PNode): PNode =

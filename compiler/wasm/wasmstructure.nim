@@ -1,4 +1,4 @@
-from wasmast import WasmNode, WasmExternalKind, WasmValueType
+from wasmast import WasmNode, WasmExternalKind, WasmValueType, Consts
 
 type
   WAsmModule* = ref object
@@ -8,6 +8,7 @@ type
     exports*: seq[WAsmExport]
     memory*: WAsmMemory
     data*: seq[WAsmData]
+    globals*: seq[WAsmGlobal]
   
   WasmType* = ref object
     params*: seq[WasmValueType]
@@ -44,6 +45,15 @@ type
     name*: string # optional, used for debug
     # kind: WasmValueType
 
+  WAsmGlobal* = ref object
+    idx: Natural
+    typ*: WasmValueType
+    mut*: bool
+    val*: WasmNode
+    name*: string # optional, used for debug
+    # kind: WasmValueType
+
+
 proc newType*(rs: WasmValueType,
   prs: varargs[WasmValueType]): WasmType = WasmType(params: @prs, res: rs)
 
@@ -78,6 +88,12 @@ proc pages*(m: WAsmMemory): Natural = m.pages
 proc newData*(id: Natural, payload: openArray[byte], name:string = ""): WAsmData = #, kind: WasmValueType
   WAsmData(idx: id, payload: @payload, name: name) #, kind: kind)
 proc index*(d: WAsmData): Natural = d.idx
+
+proc newGlobal*(id: Natural, typ: WasmValueType, val: WasmNode, mut: bool = false, name:string = ""): WAsmGlobal = #, kind: WasmValueType
+  # val is the value of the global as a wasmnode. the node should be a const[typ] value.
+  assert val.kind in Consts
+  WAsmGlobal(idx: id, typ: typ, val: val, mut:mut, name: name)
+proc index*(d: WAsmGlobal): Natural = d.idx
 
 proc newModule*(nm: string=""): WAsmModule = 
   result = WAsmModule(name: nm)

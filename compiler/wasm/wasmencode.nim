@@ -312,7 +312,8 @@ proc encode(op: WasmNode): seq[byte] =
     add result, op.relativeDepth.int32.unsignedLEB128
   of opList:
     for o in op.sons:
-      add result, encode(o)
+      if not o.isNil:
+        add result, encode(o)
   of woIf:
     add result, encode(op.a)
     add result, encode(op.kind)
@@ -385,8 +386,21 @@ proc encode(data: seq[WAsmData]): tuple[num: int, d: seq[byte]] =
     # segment
     result.d.add(d.payload)
 
+proc encode(globals: seq[WAsmGlobal]): tuple[num: int, g: seq[byte]] =
+  result = (globals.len, @[])
+  for g in globals:
+    # type
+    # mut?
+    # val<- const[] val
+    # end
+    result.g.add(encode(g.typ))
+    result.g.add(g.mut.int32.unsignedLEB128)
+    result.g.add(encode(g.val))
+    result.g.add(encode(woEnd))
+
 proc encode(f: WAsmFunction): tuple[t:seq[byte],f:seq[byte]] =
   result = (@[], @[])
+  echo "# encoding ", f.name
   # types part
   result.t.add(0x60.byte)
   result.t.add(f.typ.params.len.int32.unsignedLEB128)
@@ -437,6 +451,7 @@ proc encode*(m: WAsmModule): seq[byte] =
   let (exportNum, exports) = encode(m.exports)
   let (memNum, memory) = encode(m.memory)
   let (dataNum, data) = encode(m.data)
+  let (globalNum, globals) = encode(m.globals)
   let (fnNum,fnTypes, functions) = encode(m.functions)
 
   # 1 TypeSection
@@ -472,7 +487,10 @@ proc encode*(m: WAsmModule): seq[byte] =
   result.add(memory)
   
   # 6 GlobalSection
-  # TODO:
+  result.add(6'i32.unsignedLEB128)
+  result.add((1+globals.len).int32.unsignedLEB128)  
+  result.add(globalNum.int32.unsignedLEB128)
+  result.add(globals)
   
   # 7 ExportSection
   result.add(7'i32.unsignedLEB128) # Export section

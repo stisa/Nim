@@ -46,9 +46,9 @@ proc render*(sn: seq[WasmNode], indlv = 0): string =
   var sons = ""
 
   for i, s in sn:
-    
-    add sons, render(s,indlv)
-    if i != sn.len-1: add sons, ",\n"
+    if not s.isNil:
+      add sons, render(s,indlv)
+      if i != sn.len-1: add sons, ",\n"
 
   result = """[
 $1
@@ -157,6 +157,11 @@ proc render*(m: WAsmMemory, indlv = 0): string =
   result = """{ "id": $1, "pages": $2 }""" % [$m.id, $m.pages]
   result = result.indent(indlv)
 
+proc render*(d: WAsmGlobal, indlv = 0): string =
+  result = """{ "name": "$3", "index": $1, "typ": $4, "val": $2 }""" % [$d.index, render(d.val), 
+                                  d.name, if d.mut: "m" & render(d.typ) else: render(d.typ)]
+  result = result.indent(indlv)
+
 proc render*(d: WAsmData, indlv = 0): string =
   result = """{ "name": "$3", "index": $1, "payload": $2 }""" % [$d.index, render(d.payload), d.name]
   result = result.indent(indlv)
@@ -180,9 +185,14 @@ proc render*(m: WAsmModule, indlv = 0): string =
     exports: string = ""
     memory: string = ""
     data: string = ""
+    globals: string = ""
   for i, im in m.imports:
     add imports, render(im, indlv+4)
     if i != m.imports.len-1: add imports, ",\n"
+
+  for i, gl in m.globals:
+    add globals, render(gl, indlv+4)
+    if i != m.globals.len-1: add globals, ",\n"
 
   for i, e in m.exports:
     add exports, render(e, indlv+4)
@@ -204,6 +214,9 @@ $2
   "functions": [
 $3
   ],
+  "globals": [
+$7
+  ],
   "data": [
 $4
   ],
@@ -211,7 +224,7 @@ $4
   "exports": [
 $6
   ]
-}""" % [m.name, imports, functions, data, memory, exports]
+}""" % [m.name, imports, functions, data, memory, exports, globals]
   result = result.indent(indlv)
 
 when isMainModule:
