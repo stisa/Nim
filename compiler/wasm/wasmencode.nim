@@ -448,6 +448,9 @@ proc encode*(m: WAsmModule): seq[byte] =
   for f in m.functions.mitems: # imports have priority in function index space
     f.hoistedIndex = f.id+importNum
     if f.exported: m.exports.add(newExport(f.hoistedIndex, ekFunction, f.name))
+  for g in m.globals:
+    if g.exported: m.exports.add(newExport(g.index, ekGlobal, g.name))
+  
   let (exportNum, exports) = encode(m.exports)
   let (memNum, memory) = encode(m.memory)
   let (dataNum, data) = encode(m.data)

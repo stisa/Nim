@@ -158,8 +158,9 @@ proc render*(m: WAsmMemory, indlv = 0): string =
   result = result.indent(indlv)
 
 proc render*(d: WAsmGlobal, indlv = 0): string =
-  result = """{ "name": "$3", "index": $1, "typ": $4, "val": $2 }""" % [$d.index, render(d.val), 
-                                  d.name, if d.mut: "m" & render(d.typ) else: render(d.typ)]
+  result = """{ "name": "$3", "index": $1, "typ": $4, "val": $2, "exp": $5 }""" % [$d.index, render(d.val), 
+                                  d.name, if d.mut: "m" & render(d.typ) else: render(d.typ),
+                                  $d.exported]
   result = result.indent(indlv)
 
 proc render*(d: WAsmData, indlv = 0): string =

@@ -51,6 +51,7 @@ type
     mut*: bool
     val*: WasmNode
     name*: string # optional, used for debug
+    exported*: bool
     # kind: WasmValueType
 
 
@@ -89,10 +90,10 @@ proc newData*(id: Natural, payload: openArray[byte], name:string = ""): WAsmData
   WAsmData(idx: id, payload: @payload, name: name) #, kind: kind)
 proc index*(d: WAsmData): Natural = d.idx
 
-proc newGlobal*(id: Natural, typ: WasmValueType, val: WasmNode, mut: bool = false, name:string = ""): WAsmGlobal = #, kind: WasmValueType
+proc newGlobal*(id: Natural, typ: WasmValueType, val: WasmNode, exp: bool = true, mut: bool = false, name:string = ""): WAsmGlobal = #, kind: WasmValueType
   # val is the value of the global as a wasmnode. the node should be a const[typ] value.
   assert val.kind in Consts
-  WAsmGlobal(idx: id, typ: typ, val: val, mut:mut, name: name)
+  WAsmGlobal(idx: id, typ: typ, val: val, exported: exp, mut:mut, name: name)
 proc index*(d: WAsmGlobal): Natural = d.idx
 
 proc newModule*(nm: string=""): WAsmModule = 
