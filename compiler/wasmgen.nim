@@ -799,7 +799,6 @@ proc gen(w: WasmGen, n: PNode, conf: ConfigRef, parentKind: TNodeKind=nkNone): W
             )
           )
           b.moveStackPtrBy(4) #size of a pointer TODO: read it from conf?
-      
   of nkExprColonExpr:
     result = w.gen(n[1], conf, n.kind)
   of nkObjConstr:
@@ -857,7 +856,16 @@ proc gen(w: WasmGen, n: PNode, conf: ConfigRef, parentKind: TNodeKind=nkNone): W
             )
           )
           b.moveStackPtrBy(4) #size of a pointer TODO: read it from conf?
-      
+  of nkDotExpr:
+    #echo conf.treeToYaml(n[1])
+    # TODO: what about object? this is for tuples
+    result = newLoad(
+      conf.mapLoadKind(n[1].sym.typ), 0, 1,
+      newAdd32(
+        w.gen(n[0], conf, n.kind), # base object loc
+        newConst(n[1].sym.offset) # field offset
+      )
+    )
   else:
     echo "# Missing kind ", n.kind
     echo renderTree(n)
