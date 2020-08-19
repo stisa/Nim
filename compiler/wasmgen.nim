@@ -759,7 +759,7 @@ proc gen(w: WasmGen, n: PNode, conf: ConfigRef, parentKind: TNodeKind=nkNone): W
         result.sons.add(newLoad(memLoadI32, 0, 1, newConst(4'i32)))
     else:
       #conf.internalError("Missing 0th kind for nkBracket " & $n[0].kind)
-      echo "# Non varargs nkBracket: inside: ", n[0].kind
+      echo "# Non varargs nkBracket: inside: ", n.typ.lastSon.kind
       #echo renderTree(n)
       #echo conf.treeToYaml(n)
       # TODO: copy part about non-numeral from objectconstr
