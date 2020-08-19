@@ -518,6 +518,20 @@ proc encode*(m: WAsmModule): seq[byte] =
   result.add(dataNum.int32.unsignedLEB128)
   result.add(data)
 
+  #[
+    TODO:https://github.com/WebAssembly/design/blob/master/BinaryEncoding.md#name-section
+    # Custom: name section
+    result.add(0'i32.unsignedLEB128)
+    result.add(m.name.toBytes)
+    var custom : seq[byte] = @[]
+    #size
+      
+    for f in m.functions:
+      custom = f.name.toBytes
+      result.add(1'i32.unsignedLEB128) # function name section
+      result.add((custom.len).int32.unsignedLEB128)
+      result.add(custom)
+  ]#
 proc writeTo*(m: seq[byte], name:string) =
   # assert(not m.len == 0)
   var res = newString(m.len)

@@ -83,7 +83,10 @@ const
 
 const allTypes = {tyNone..tyVoid}
 proc mapType*(c: ConfigRef, tt:PType):WasmValueType =
-  #echo c.typeToYaml(tt)
+  #echo "#maptyp",c.typeToYaml(tt)
+  if tt.isNil: return vtNone
+  if tt.kind == tyVarargs: return vtI32
+  
   let t = if not tt.isNil: tt.skipTypes(allTypes-ConcreteTypes) else: tt
   if t.isNil: return vtNone
   case t.kind:
@@ -92,7 +95,7 @@ proc mapType*(c: ConfigRef, tt:PType):WasmValueType =
   #  tyOrdinal, tyVar, tyOpenArray, tyObject, tyChar:
   of tyBool,tyChar, tyInt..tyInt32, tyUInt..tyUInt32,
     tyString, tyPtr, tyRef, tyPointer, tyVar, tyObject, tySet,
-    tySequence, tyEnum, tyArray:
+    tySequence, tyEnum, tyArray, tyProc:
     result = vtI32
   of tyFloat32:
     result = vtF32
@@ -118,7 +121,9 @@ proc mapLoadKind*(c: ConfigRef, tt:PType): WasmOpKind =
   of vtF64: result = memLoadF64
   else:
     c.internalError("unmapped load " & $(c.mapType(tt)) & " for type: " & $tt.kind)
-    
+
+proc isPtrLike*(t:TTypeKind): bool =
+  t in {tyObject, tyArray, tyVar, tyPtr, tyString, tySequence}
 
 
 proc alignTo4*(n:Natural): Natural = (n + 3) and not(0x03)

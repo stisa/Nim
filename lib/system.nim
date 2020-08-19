@@ -1726,7 +1726,7 @@ when notJSnotNims and defined(nimSeqsV2):
 
 {.pop.}
 
-when notJSnotNims:
+when notJSnotNims and not defined wasm:
   proc writeStackTrace*() {.tags: [], gcsafe, raises: [].}
     ## Writes the current stack trace to ``stderr``. This is only works
     ## for debug builds. Since it's usually used for debugging, this
@@ -1942,7 +1942,9 @@ elif hasAlloc:
         inc(i)
   {.pop.}
 
-when defined(nimvarargstyped):
+when defined wasm:
+  proc echo*(x: varargs[typed, `$`]) {. tags: [WriteIOEffect], benign, sideEffect, header:"glue", importc:"rawEcho".}
+elif defined(nimvarargstyped):
   proc echo*(x: varargs[typed, `$`]) {.magic: "Echo", tags: [WriteIOEffect],
     benign, sideEffect.}
     ## Writes and flushes the parameters to the standard output.
@@ -3023,12 +3025,15 @@ when defined(genode):
         # Perform application initialization
         # and return to thread entrypoint.
 
+when not defined wasm:
 
-import system/widestrs
-export widestrs
+  import system/widestrs
+  export widestrs
 
-import system/io
-export io
+  import system/io
+  export io
+else:
+  {.warning: "system/io, widestrs missing for wasm".}
 
 when not defined(createNimHcr) and not defined(nimscript):
   include nimhcr
