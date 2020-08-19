@@ -177,15 +177,15 @@ proc commandScan(cache: IdentCache, config: ConfigRef) =
 
 proc commandCompileToWasm(graph:ModuleGraph) =
   let c = graph.config
-  c.exc = excCpp # TODO: find out differences
+  c.exc = excGoto # TODO: find out differences
   if c.outDir.isEmpty:
     c.outDir = c.projectPath
   if c.outFile.isEmpty:
     c.outFile = RelativeFile(c.projectName & ".wasm")  
 
-  setTarget(graph.config.target, osJS, cpuJS)
+  setTarget(graph.config.target, osWasm, cpuWasm32)
   defineSymbol(graph.config.symbols,"wasm")
-  undefSymbol(graph.config.symbols,"js") # don't know why this is defined...
+  #undefSymbol(graph.config.symbols,"js") # don't know why this is defined...
   semanticPasses(graph)
   registerPass(graph, WasmGenPass)
   # this bypasses system...

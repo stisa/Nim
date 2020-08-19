@@ -10,12 +10,12 @@
 # Page size of the system; in most cases 4096 bytes. For exotic OS or
 # CPU this needs to be changed:
 const
-  PageShift = when defined(cpu16): 8 else: 12 # \
+  PageShift = when defined(cpu16): 8 elif defined(wasm): 16 else: 12 # \
     # my tests showed no improvements for using larger page sizes.
   PageSize = 1 shl PageShift
   PageMask = PageSize-1
 
-  MemAlign = 16 # also minimal allocatable memory block
+  MemAlign = if defined(wasm): 4 else: 16 # also minimal allocatable memory block
 
   BitsPerPage = PageSize div MemAlign
   UnitsPerPage = BitsPerPage div (sizeof(int)*8)

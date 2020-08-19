@@ -197,6 +197,24 @@ elif defined(nintendoswitch):
     cstderr.rawWrite("\n")
     quit(1)
 
+elif defined(wasm):
+  proc nimUnloadLibrary(lib: LibHandle) =
+    cstderr.rawWrite("nimUnLoadLibrary not implemented")
+    cstderr.rawWrite("\n")
+    quit(1)
+
+  proc nimLoadLibrary(path: string): LibHandle =
+    cstderr.rawWrite("nimLoadLibrary not implemented")
+    cstderr.rawWrite("\n")
+    quit(1)
+
+
+  proc nimGetProcAddr(lib: LibHandle, name: cstring): ProcAddr =
+    cstderr.rawWrite("nimGetProAddr not implemented")
+    cstderr.rawWrite(name)
+    cstderr.rawWrite("\n")
+    quit(1)
+
 else:
   {.error: "no implementation for dyncalls".}
 

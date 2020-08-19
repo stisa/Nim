@@ -302,5 +302,29 @@ elif hostOS == "standalone" or defined(StandaloneHeapSize):
     if bumpPointer-size == cast[int](p):
       dec bumpPointer, size
 
+elif defined(wasm): # TODO:
+  # WASM page size is 64Kib and the only valid op is
+  # grow (Memory.prototype.grow(bynumofpages))
+  const StandaloneHeapSize {.intdefine.}: int = 1 * PageSize
+  var
+    theHeap: array[StandaloneHeapSize div sizeof(float64), float64] # 'float64' for alignment
+    bumpPointer = cast[int](addr theHeap)
+
+  proc osAllocPages(size: int): pointer {.inline.} =
+    if size+bumpPointer < cast[int](addr theHeap) + sizeof(theHeap):
+      result = cast[pointer](bumpPointer)
+      inc bumpPointer, size
+    else:
+      raiseOutOfMem()
+
+  proc osTryAllocPages(size: int): pointer {.inline.} =
+    if size+bumpPointer < cast[int](addr theHeap) + sizeof(theHeap):
+      result = cast[pointer](bumpPointer)
+      inc bumpPointer, size
+
+  proc osDeallocPages(p: pointer, size: int) {.inline.} =
+    if bumpPointer-size == cast[int](p):
+      dec bumpPointer, size
+
 else:
   {.error: "Port memory manager to your platform".}
