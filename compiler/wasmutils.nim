@@ -94,7 +94,7 @@ proc mapType*(c: ConfigRef, tt:PType):WasmValueType =
   #  tyString, tyPointer, tySequence, tyArray, tyProc,
   #  tyOrdinal, tyVar, tyOpenArray, tyObject, tyChar:
   of tyBool,tyChar, tyInt..tyInt32, tyUInt..tyUInt32,
-    tyString, tyPtr, tyRef, tyPointer, tyVar, tyObject, tySet,
+    tyString, tyPtr, tyRef, tyPointer, tyVar, tyObject, tyTuple, tySet,
     tySequence, tyEnum, tyArray, tyProc:
     result = vtI32
   of tyFloat32:
@@ -102,7 +102,7 @@ proc mapType*(c: ConfigRef, tt:PType):WasmValueType =
   of tyFloat, tyFloat64:
     result = vtF64
   else:
-    c.internalError("unmapped type kind " & $t.kind)
+    c.internalError("mapType: unmapped type kind " & $t.kind)
 
 proc mapStoreKind*(c: ConfigRef, tt:PType): WasmOpKind =
   case c.mapType(tt):

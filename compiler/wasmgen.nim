@@ -430,10 +430,8 @@ proc wasmConstToBytes(conf:ConfigRef, w: WasmNode, seqlen = BiggestInt(-1)): seq
     result.add(w.floatVal.float64.toBytes)
   else:
     conf.internalError("Not a const for constToBytes: " & $w.kind)
-  if seqlen != -1:
+  if seqlen != -1: #
     result.setLen(seqlen)
-    #while result.len < seqlen:
-    #  result.add(0x00)
 
   #echo "size wasmconst ", result.len, " exp ", seqlen
 
@@ -762,30 +760,52 @@ proc gen(w: WasmGen, n: PNode, conf: ConfigRef, parentKind: TNodeKind=nkNone): W
     else:
       #conf.internalError("Missing 0th kind for nkBracket " & $n[0].kind)
       echo "# Non varargs nkBracket: inside: ", n[0].kind
-      echo renderTree(n)
-      echo conf.treeToYaml(n)
-      if n.typ.kind != tyArray:
-        conf.internalError("Not an array literal")
+      #echo renderTree(n)
+      #echo conf.treeToYaml(n)
+      # TODO: copy part about non-numeral from objectconstr
+      if n.typ.kind notin {tyArray, tySequence}:
+        conf.internalError("Not an array literal or seq @[] lit ")
       result = newConst(b.stackptr)
-      let arrlen = conf.getSize(n.typ)
-      for son in n:
-        # intlikes are kind of wrong, they change size.
-        # need to add padding?? eg. setlen(4) for int32
-        # maybe i can get away with load as?
-        let bytes = conf.wasmConstToBytes(w.gen(son, conf, n.kind), conf.getSize(n.typ.lastSon))
+      
+      # in case this is a seq, seq are a pointer to len+reservered+data
+      # so pointer is returned as result, the rest is put in data
+      if n.typ.kind == tySequence:
+        #echo conf.treeToYaml(n)
+        # for literals, len and cap == with the number of initial elems in the brackets @[a,...]
+        let sq = n.len.int32.toBytes & n.len.int32.toBytes 
         b.m.data.add(
           newData(
-            b.stackptr, 
-            bytes, "arrvalue"
+            b.stackptr, sq, "seq"
           )
         )
-        b.moveStackPtrBy(bytes.len)
+        b.moveStackPtrBy(sq.len)
+
+      for son in n:
+        if son.kind in nkLiterals:  
+          let bytes = conf.wasmConstToBytes(w.gen(son, conf, n.kind), conf.getSize(n.typ.lastSon))
+          b.m.data.add(
+            newData(
+              b.stackptr, 
+              bytes, "val"
+            )
+          )
+          b.moveStackPtrBy(bytes.len)
+        else:
+          # it's some pointer indirection, store it and move by 4bytes
+          # TODO:should make copies of non shallow types
+          b.nimInitBody.add(
+            newStore(
+              memStoreI32, w.gen(son, conf, n.kind), 0, newConst(b.stackptr)
+            )
+          )
+          b.moveStackPtrBy(4) #size of a pointer TODO: read it from conf?
+      
   of nkExprColonExpr:
     result = w.gen(n[1], conf, n.kind)
   of nkObjConstr:
       echo "# An object constructor"
-      echo renderTree(n)
-      echo conf.treeToYaml(n)
+      #echo renderTree(n)
+      #echo conf.treeToYaml(n)
       if n.typ.kind != tyObject:
         conf.internalError("Not an object construction")
       result = newConst(b.stackptr)
@@ -799,6 +819,32 @@ proc gen(w: WasmGen, n: PNode, conf: ConfigRef, parentKind: TNodeKind=nkNone): W
             newData(
               b.stackptr, 
               bytes, n[0].sym.name.s & "." & son[0].sym.name.s
+            )
+          )
+          b.moveStackPtrBy(bytes.len)
+        else:
+          # it's some pointer indirection, store it and move by 4bytes
+          # TODO:should make copies of non shallow types
+          b.nimInitBody.add(
+            newStore(
+              memStoreI32, w.gen(son, conf, n.kind), 0, newConst(b.stackptr)
+            )
+          )
+          b.moveStackPtrBy(4) #size of a pointer TODO: read it from conf?
+  of nkTupleConstr:
+      echo "# A tuple constructor"
+      #echo renderTree(n)
+      echo conf.treeToYaml(n)
+      if n.typ.kind != tyTuple:
+        conf.internalError("Not a tuple construction")
+      result = newConst(b.stackptr)
+      for i, son in n:
+        if son.kind in nkLiterals:
+          let bytes = conf.wasmConstToBytes(w.gen(son, conf, n.kind), son.typ.size)
+          b.m.data.add(
+            newData(
+              b.stackptr, 
+              bytes, n.typ.sym.name.s & "." & n.typ.n[i].sym.name.s
             )
           )
           b.moveStackPtrBy(bytes.len)
