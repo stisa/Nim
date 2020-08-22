@@ -32,7 +32,7 @@ proc toBytes*(s: string): seq[byte] =
 
 proc encode(vt:WasmValueType): byte =
   case vt:
-  of vtI32: result = 0x7f.byte
+  of vtI32, vtI8, vtI16: result = 0x7f.byte
   of vtI64: result = 0x7e.byte
   of vtF32: result = 0x7d.byte
   of vtF64: result = 0x7c.byte

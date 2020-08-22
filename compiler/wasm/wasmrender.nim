@@ -25,7 +25,7 @@ proc render(bytes: seq[byte],hex:bool = false): string =
       add result,  bytes[b].toHex
   else:
     for b in countdown(bytes.len-1,0,1):
-      add result,  bytes[b].char
+      addEscapedChar result,  bytes[b].char
     result = result.escape
   
 proc render(t: WasmType, indlv = 0): string =
@@ -88,10 +88,7 @@ proc render*(n: WasmNode, indlv = 0): string =
   of woCallIndirect:
     #typeIndex*: Natural
     #reserved*: Natural # 0 in MVP
-    result = """{
-  "opcode": "$1", 
-  "sons": $2
-}""" % [$n.kind, render(n.sons, indlv)]
+    result = """{ "opcode": "$1", "sons": $2 }""" % [$n.kind, render(n.sons, indlv)]
   of woGetLocal, woSetLocal, woTeeLocal, woGetGlobal, woSetGlobal:
     result = """{
   "opcode": "$1",
@@ -109,28 +106,13 @@ proc render*(n: WasmNode, indlv = 0): string =
 }""" % [$n.kind, render(n.sons, indlv), $n.align, $n.offset]
   of memSize, memGrow: 
     #memReserved*: Natural
-    result = """{
-  "opcode": "$1",
-  "sons": $2
-}""" % [$n.kind, render(n.sons, indlv)]
+    result = """{ "opcode": "$1", "sons": $2 }""" % [$n.kind, render(n.sons, indlv)]
   of constI32, constI64:
-    result = """{
-  "opcode": "$1",
-  "value": $3,
-  "sons": $2
-}""" % [$n.kind, render(n.sons, indlv), $n.intVal]
+    result = """{ "opcode": "$1", "value": $2 }""" % [$n.kind, $n.intVal]
   of constUI32, constUI64:
-    result = """{
-  "opcode": "$1",
-  "value": $3,
-  "sons": $2
-}""" % [$n.kind, render(n.sons, indlv), $n.uintVal]
+    result = """{ "opcode": "$1", "value": $2 }""" % [$n.kind, $n.uintVal]
   of constF32, constF64:
-    result = """{
-  "opcode": "$1",
-  "value": $3,
-  "sons": $2
-  }""" % [$n.kind, render(n.sons, indlv), $n.floatVal]
+    result = """{ "opcode": "$1", "value": $2 }""" % [$n.kind, $n.floatVal]
   else:
     result = """{
   "opcode": "$1", 
@@ -158,9 +140,15 @@ proc render*(m: WAsmMemory, indlv = 0): string =
   result = result.indent(indlv)
 
 proc render*(d: WAsmGlobal, indlv = 0): string =
-  result = """{ "name": "$3", "index": $1, "typ": $4, "val": $2, "exp": $5 }""" % [$d.index, render(d.val), 
-                                  d.name, if d.mut: "m" & render(d.typ) else: render(d.typ),
-                                  $d.exported]
+  var dtyp = ""
+  if d.exported: dtyp.add("\"exported\",")
+  if d.mut: dtyp.add("\"mut\",")
+  dtyp.add(render(d.typ))
+  result = """{ "name": "$3", "index": $1, "typ": [$4], 
+  "val": $2
+}""" % [
+    $d.index, render(d.val), d.name,  dtyp
+  ]
   result = result.indent(indlv)
 
 proc render*(d: WAsmData, indlv = 0): string =

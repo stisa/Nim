@@ -127,5 +127,5 @@ proc newOpList*(ops: varargs[WasmNode]): WasmNode =
   result = newWANode(opList)
   result.sons = @ops
 
-#proc newOpEmpty*(): WasmNode =
-#  result = newWANode(opEmpty)
+proc newNop*(): WasmNode =
+  result = newWANode(woNop)

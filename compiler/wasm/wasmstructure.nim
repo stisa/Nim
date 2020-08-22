@@ -1,5 +1,5 @@
-from wasmast import WasmNode, WasmExternalKind, WasmValueType, Consts
-
+from wasmast import WasmNode, WasmExternalKind, WasmValueType, Consts, WasmOpKind
+from wasmnode import newConst
 type
   WAsmModule* = ref object
     name*: string
@@ -90,10 +90,18 @@ proc newData*(id: Natural, payload: openArray[byte], name:string = ""): WAsmData
   WAsmData(idx: id, payload: @payload, name: name) #, kind: kind)
 proc index*(d: WAsmData): Natural = d.idx
 
-proc newGlobal*(id: Natural, typ: WasmValueType, val: WasmNode, exp: bool = true, mut: bool = false, name:string = ""): WAsmGlobal = #, kind: WasmValueType
+proc newGlobal*(id: Natural, typ: WasmValueType, val: WasmNode=WasmNode(kind:woNop), exp: bool = true, mut: bool = false, name:string = ""): WAsmGlobal = #, kind: WasmValueType
   # val is the value of the global as a wasmnode. the node should be a const[typ] value.
-  assert val.kind in Consts
-  WAsmGlobal(idx: id, typ: typ, val: val, exported: exp, mut:mut, name: name)
+  assert val.kind in Consts+{woNop}, "got " & $val.kind
+  var v = val
+  if val.kind == woNop:
+    #just initialize the global to 0
+    case typ 
+    of vtI32, vtI64, vtI8, vtI16: v = newConst(0'i32)
+    of vtF32: v = newConst(0'f32)
+    of vtF64: v = newConst(0'F64)
+    else: assert(false, name)
+  WAsmGlobal(idx: id, typ: typ, val: v, exported: exp, mut:mut, name: name)
 proc index*(d: WAsmGlobal): Natural = d.idx
 
 proc newModule*(nm: string=""): WAsmModule = 

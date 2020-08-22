@@ -3,6 +3,7 @@ type
     vtNone,
     vtF64, vtF32
     vtI64, vtI32,
+    vtI8, vtI16, # out of spec
     ltPseudo
 
   WasmExternalKind* = enum
