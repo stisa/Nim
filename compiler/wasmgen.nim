@@ -1042,11 +1042,11 @@ proc gen(w: WasmGen, n: PNode, conf: ConfigRef, parentKind: TNodeKind=nkNone): W
         # since some nkKinds are skipped, we produce nil nodes. 
         #TODO: fix that instead of using this workaround
         result.sons.add(tmp)
-  of nkAsgn:
+  of nkAsgn, nkFastAsgn:
     result = w.genAsgn(n[0], n[1], conf)
   of nkReturnStmt:
     result = newReturn(w.gen(n.sons[0],conf))
-  of nkHiddenAddr:
+  of nkHiddenAddr, nkAddr:
     # to generate:
     # get global
     # store 
@@ -1223,6 +1223,19 @@ proc gen(w: WasmGen, n: PNode, conf: ConfigRef, parentKind: TNodeKind=nkNone): W
         
       )
     )
+  of nkIfStmt:
+    #echo "nkIfstmt",treeToYaml n
+    # ifstmt are recursive for now
+    result = newNop()
+    
+    for bidx in countdown(n.len-1,0):
+      #result = gen else1
+      #result2 = gen if1 else result1
+      #result3 = gen if2 else result2
+      if n[bidx].kind == nkElse:
+        result = w.gen(n[bidx][0], conf, n.kind)
+      else:
+        result = newIfElse(w.gen(n[bidx][0], conf, n.kind), w.gen(n[bidx][1], conf, n.kind), result)
   else:
     echo "# Missing kind ", n.kind
     echo renderTree(n)
