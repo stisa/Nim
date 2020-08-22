@@ -1,4 +1,4 @@
-import wasmast, wasmleb128
+import wasmast
 from math import ceil,log2
 
 proc newWANode*(op:WasmOpKind):WasmNode =

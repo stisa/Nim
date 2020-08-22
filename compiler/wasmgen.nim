@@ -337,14 +337,64 @@ proc wasmConstToBytes(conf:ConfigRef, w: WasmNode, seqlen = BiggestInt(-1)): seq
     result.setLen(seqlen)
 
   #echo "size wasmconst ", result.len, " exp ", seqlen
+proc getMagicOp(c: ConfigRef, m: TMagic): WasmOpKind =
+  result = case m:
+  of mAddI, mAddU, mSucc: ibAdd32
+  of mSubI, mSubU, mPred: ibSub32
+  of mMulI, mMulU: ibMul32
+  of mDivI: ibDivS32
+  of mDivU: ibDivU32
+  of mModI: ibRemS32
+  of mModU: ibRemU32
+  of mAnd, mBitandI: ibAnd32
+  of mOr, mBitorI: ibOr32
+  of mXor, mBitxorI: ibXor32
+  of mShlI: ibShl32
+  of mShrI: ibShrS32
+  of mNot: itEqz32
+  of mEqI, mEqEnum, mEqCh, mEqB,
+    mEqRef, mEqStr, mEqSet: irEq32  
+    # If addr strA == addr strB, they are the same string
+  of mLtU: irLtU32
+  of mLtI, mLtEnum, mLtStr, mLtCh, mLtSet, mLtB, mLtPtr: irLtS32
+  of mLeU: irLeU32
+  of mLeI, mLeEnum, mLeStr, mLeCh, mLeSet, mLeB, mLePtr: irLeS32
+  of mEqF64: frEq64
+  of mLeF64: frLe64
+  of mLtF64: frLt64
+  of mAddF64: fbAdd64
+  of mSubF64: fbSub64
+  of mMulF64: fbMul64
+  of mDivF64: fbDiv64
+  else: woNop
+  if result == woNop:
+    c.internalError("unmapped magic op: " & $m)
+
+proc getFloat32Magic(c: ConfigRef, m:TMagic):WasmOpKind =
+  result = case m:
+  of mEqF64: frEq32
+  of mLeF64: frLe32
+  of mLtF64: frLt32
+  of mAddF64: fbAdd32
+  of mSubF64: fbSub32
+  of mMulF64: fbMul32
+  of mDivF64: fbDiv32
+  else: woNop
+  if result == woNop: c.internalError("unmapped float magic: " & $m) 
+
+const UnaryMagic = {mNot}    
+const BinaryMagic = {mAddI,mAddU,mSubI,mSubU,mMulI,mMulU,mDivI,mDivU,mSucc,mPred,
+  mModI,mModU, mAnd, mOr, mXor, mShlI, mShrI, mLtU, mLeU,
+  mEqI, mEqEnum, mEqCh, mEqB, mEqRef, mEqStr, mEqSet,
+  mLtI, mLtEnum, mLtStr, mLtCh, mLtSet, mLtB, mLtPtr,
+  mLeI, mLeEnum, mLeStr, mLeCh, mLeSet, mLeB, mLePtr,
+  mBitandI, mBitorI, mBitxorI}
+const FloatsMagic = {mEqF64, mLeF64, mLtF64, mAddF64, mSubF64, mMulF64, mDivF64}
 
 proc callMagic(w:WasmGen, n: PNode, magic:TMagic): WasmNode =
   echo "#MAGIC: ", magic
   let b = w.graph.backend.Backend
   case magic:
-  of mAddF64: result = newBinaryOp(fbAdd64, w.gen(n.sons[1],w.config), w.gen(n.sons[2],w.config))
-  of mAddI: result = newBinaryOp(ibAdd32, w.gen(n.sons[1],w.config), w.gen(n.sons[2],w.config))
-  of mEqI, mEqCh: result = newBinaryOp(irEq32, w.gen(n.sons[1],w.config), w.gen(n.sons[2],w.config))
   #[# the idea for string conversion of numbers:
     # push values to the memory, then give the pointer to that memory to echo
     let vallen = if magic==mIntToStr: 4'i32 else: 8'i32
@@ -400,10 +450,231 @@ proc callMagic(w:WasmGen, n: PNode, magic:TMagic): WasmNode =
           )
         )
         b.moveStackPtrBy(son.typ.size) #size of a pointer TODO: read it from conf?
-  else:
+  of UnaryMagic:
+    result = newUnaryOp(w.config.getMagicOp(magic), w.gen(n[1], w.config))
+  of BinaryMagic:
+    result = newBinaryOp(w.config.getMagicOp(magic), w.gen(n[1], w.config), w.gen(n[2], w.config))
+  of FloatsMagic:
+    if n.typ.kind == tyFloat32: #CHECK: why did I have this comment?
+      # or (n.typ.kind == tyBool and n[1].typ.kind == tyFloat32): 
+      # the bool part is because otherwise 1'f32+2.0 would use f32 arithm
+      result = newBinaryOp(w.config.getFloat32Magic(magic), w.gen(n[1], w.config), w.gen(n[2], w.config))
+    else:
+      result = newBinaryOp(w.config.getMagicOp(magic), w.gen(n[1], w.config), w.gen(n[2], w.config))
+  else: 
     echo w.config.treeToYaml(n)
-    w.config.internalError("TODO magic: " & $magic)
+    w.config.internalError("# callMagic unhandled magic: " & $magic)
+  #[
+  of mAddr:
+    #echo $(s.magic), w.config.treeToYaml(n[1], 0, 1)
+    #echo $(s.magic), w.config.symToYaml(n[1].sym)
+    return newConst(n[1].sym.offset)
+  of mBitnotI:
+    return newBinaryOp(ibXor32, w.gen(n[1]), newConst(-1.int32))
+  of mNew:
+    if w.generatedProcs.hasKey(s.mangleName):
+      return newCall(w.generatedProcs[s.mangleName].id, w.genSymLoc(n[1].sym), false)
 
+    # new gets passed a ref, so local 0 is the location of the ref to the
+    # object to initialize.
+    #echo treeToYaml n[1]
+    let size = w.config.getSize(n[1].typ.lastSon).alignTo4
+    var magicbody = newOpList()
+    magicbody.sons.add([
+      # heap ptr points to next free byte in memory. Use it to
+      # move the pointed-to location of the ref to somewhere free
+      newStore(
+        memStoreI32, newLoad(memLoadI32, 0, 1, newConst(heapPtrLoc)), 
+        0, newGet(woGetLocal, 0)
+      ),
+      # move heap ptr by `size` bytes.
+      # the assumption is that everything after heap ptr is free to take
+      newStore(
+        memStoreI32, newBinaryOp(
+          ibAdd32, newLoad(memLoadI32, 0, 1, newConst(heapPtrLoc)), newConst(size.int32)
+        ),  
+        0, newConst(heapPtrLoc)
+      )
+    ])
+    
+    w.m.functions.add(
+      newFunction(
+        w.nextFuncIdx, newType(vtNone, vtI32), magicbody, @[], s.mangleName,
+        s.flags.contains(sfExported)
+      )
+    )
+    result = newCall(w.nextFuncIdx, w.genSymLoc(n[1].sym), false)
+    w.generatedProcs.add(s.mangleName, (w.nextFuncIdx,false)) 
+    inc w.nextFuncIdx
+  of mReset:
+    if w.generatedProcs.hasKey(s.mangleName):
+      return newCall(w.generatedProcs[s.mangleName].id, w.genSymLoc(n[1].sym), false)
+    var loopBody = newWANode(opList)
+
+    loopBody.sons.add(
+      newStore(
+        memStoreI32,
+        newConst(0'i32),
+        0'i32,
+        newGet(woGetLocal, 1)
+      )
+    )
+    loopBody.sons.add(
+      newSet(
+        woSetLocal, 1'i32,
+        newBinaryOp(
+          ibAdd32,
+          newGet(woGetLocal, 1),
+          # FUTURE FIXME: when some types have size <4, this needs to be reworked too
+          newConst(4'i32)
+        )
+      )
+    )
+
+    var magicbody = newWhileLoop(
+          newBinaryOp(
+            irLtU32,
+            newGet(woGetLocal, 1),
+            newBinaryOp(
+              ibAdd32,
+              newGet(woGetLocal, 0),
+              newConst(w.config.getSize(n[0].typ).alignTo4.int32)
+            )
+          ),
+          loopBody
+        )
+        
+    w.m.functions.add(
+      newFunction(
+        w.nextFuncIdx, newType(vtNone, vtI32), magicbody, @[vtI32], s.mangleName,
+        s.flags.contains(sfExported)
+      )
+    )
+    
+    result = newCall(w.nextFuncIdx, w.genSymLoc(n[1].sym), false)
+    
+    w.generatedProcs.add(s.mangleName,(w.nextFuncIdx.int,false))
+    inc w.nextFuncIdx
+
+  of mDotDot:
+    let t = n[1].typ.skipTypes(abstractVarRange)
+    if n.len > 2:
+      result = newOpList(
+        newStore(
+          w.config.mapStoreKind(t),
+          w.gen(n[1]), 0'i32, newConst(w.nextMemIdx.int32)
+        ),
+        newStore(
+          w.config.mapStoreKind(t),
+          w.gen(n[2]), 0'i32, newConst((w.nextMemIdx+w.config.getSize(t).alignTo4).int32)
+        ),
+        newLoad(w.config.mapLoadKind(t), 0, 1, newConst(w.nextMemIdx.int32))  # FIXME: this shouldn't be necessary
+                                                                    # basically, load and store in itself       
+      )
+    else:
+      result = newOpList(
+        newStore(
+          w.config.mapStoreKind(t),
+          w.gen(n[1]), 0'i32, newConst((w.nextMemIdx+w.config.getSize(t).alignTo4).int32)
+        ),
+        newLoad(w.config.mapLoadKind(t), 0, 1, newConst(w.nextMemIdx.int32))
+      )
+  of mSizeOf:
+    result = newConst(w.config.getSize(n[1].typ).alignTo4.int32)
+  of mInc, mDec:
+    result = newOpList(
+      newStore(
+        memStoreI32, 
+        newBinaryOp(
+          if s.magic == mInc: ibAdd32 else: ibSub32,
+          w.gen(n[1]), w.gen(n[2])
+        ), 0, 
+        w.genSymLoc(n[1].sym)        
+      )     
+    )
+  of mNewSeq:
+    #echo "# mNewSeq"
+    #echo treeToYaml n
+    # we receive the index to a ptr.We then need to reserve a block of memory for the
+    # len+data of the seq. Since a default len is always know, we can store it.
+    # remember to return the pointer you initially got
+    if not w.generatedProcs.hasKey(s.mangleName):      
+      var magicbody = newOpList(
+        newStore( # store len at pointed to
+          memStoreI32,
+          newGet(woGetLocal, 1),
+          0, # offset
+          newGet(woGetLocal, 0)
+        ),
+        newStore( # move heap ptr
+          memStoreI32,
+          newAdd32(
+            newLoad(memLoadI32, 0, 1, newConst(heapPtrLoc.int32)),
+            newAdd32(
+              newConst(wasmPtrSize.int32),
+              newMul32(
+                newConst(w.config.getSize(n[1].sym.typ.lastSon).alignTo4.int32),
+                newGet(woGetLocal, 1)
+              )
+            )
+          ),
+          0, newConst(heapPtrLoc.int32)
+        )
+      )
+      
+      w.m.functions.add(
+        newFunction(
+          w.nextFuncIdx, newType(vtNone, vtI32, vtI32), magicbody, @[], s.mangleName,
+          s.flags.contains(sfExported)
+        )
+      )
+      w.generatedProcs.add(s.mangleName, (w.nextFuncIdx,false)) 
+      inc w.nextFuncIdx
+    
+    # echo "n1: ",treeToYaml n[1]
+    # I don't like special casing here.
+    if n[1].kind == nkSym and n[1].sym.offset>0:
+      result = newCall(w.generatedProcs[s.mangleName].id, 
+        newLoad(memLoadI32, 0,1, w.genSymLoc(n[1].sym)), 
+        w.gen(n[2]), false
+      )
+    else:
+      result = newCall(w.generatedProcs[s.mangleName].id, 
+        newLoad(memLoadI32, 0,1, newConst(heapPtrLoc)), # this is not really ideal, it works because we assume
+                                                        # newseq(len):res and so result is at local #1
+        w.gen(n[2]), false
+      )
+    
+  of mNewSeqOfCap:
+    #echo "# mNewSeqOfCap"
+    #echo w.config.treeToYaml(n)
+    w.config.internalError("# TODO: mNewSeqOfCap")
+    # we receive the len of the block to reserve.
+    # Since this proc is completely a magic, we can do everything here.
+    # remember to return the pointer you initially got
+    result = newOpList(
+      newLoad(memLoadI32, 0, 1, newConst(heapPtrLoc.int32)), # this is the returned loc
+      newStore( # move heap ptr
+        memStoreI32,
+        newAdd32(
+          newLoad(memLoadI32, 0, 1, newConst(heapPtrLoc.int32)),
+          newAdd32(
+            newConst(wasmPtrSize.int32),
+            newMul32(
+              newConst(w.config.getSize(n.typ).alignTo4.int32),
+              w.gen(n[1])
+            )
+          )
+        ),
+        0, newConst(heapPtrLoc.int32)
+      )
+    )
+  of mLengthSeq, mLengthStr:
+    result = newLoad(memLoadI32, 0, 1, w.gen(n[1]))
+  of mChr:
+    result = w.gen(n[1][0]) # skip nkChckRange for now... FIXME: 
+  ]#
+######################
 proc genProc(w: WasmGen, n: PNode, conf: ConfigRef) =
   echo "#GNP: ", $n.kind, " module: ", conf.toFilename(n.info.fileIndex)
   #echo conf.treeToYaml(n)
@@ -536,8 +807,8 @@ proc genCall(w: WasmGen, n: PNode, conf: ConfigRef, parentKind: TNodeKind=nkNone
   let b = Backend(w.graph.backend)
 
   if n.sons[0].sym.magic != mNone:
-    result = callMagic(w, n, n.sons[0].sym.magic)
-    return
+    return callMagic(w, n, n.sons[0].sym.magic)
+    
 
   # TODO: inlined procs??
   #[
