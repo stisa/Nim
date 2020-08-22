@@ -461,6 +461,19 @@ proc callMagic(w:WasmGen, n: PNode, magic:TMagic): WasmNode =
       result = newBinaryOp(w.config.getFloat32Magic(magic), w.gen(n[1], w.config), w.gen(n[2], w.config))
     else:
       result = newBinaryOp(w.config.getMagicOp(magic), w.gen(n[1], w.config), w.gen(n[2], w.config))
+  of mInc:
+    #echo w.config.typeToYaml(n[1].typ)
+    result =  newSet(
+      woSetGlobal,
+      n[1].getLoc,
+      newBinaryOp(ibAdd32, w.gen(n[1], w.config), w.gen(n[2], w.config))
+    )
+  of mDec:
+    result =  newSet(
+      woSetGlobal,
+      n[1].getLoc,
+      newBinaryOp(ibSub32, w.gen(n[1], w.config), w.gen(n[2], w.config))
+    ) 
   else: 
     echo w.config.treeToYaml(n)
     w.config.internalError("# callMagic unhandled magic: " & $magic)
@@ -1022,14 +1035,14 @@ proc gen(w: WasmGen, n: PNode, conf: ConfigRef, parentKind: TNodeKind=nkNone): W
     # n[0]: blockname, n[1] the body
     result = w.gen(n[1], conf, n.kind)
   of nkWhileStmt:
-    echo conf.treeToYaml(n)
+    # echo conf.treeToYaml(n)
     result = newWhileLoop(
       w.gen(n[0], conf, n.kind), # condition
       w.gen(n[1], conf, n.kind)  # body
     )
   of nkLiterals: #TODO: other literals
     result = w.genLit(n, conf, parentKind)
-  of nkStmtList:
+  of nkStmtList, nkStmtListExpr:
     result = newOpList()
     for son in n.sons:
       let tmp = w.gen(son, conf, n.kind)
