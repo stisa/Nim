@@ -340,7 +340,6 @@ proc wasmConstToBytes(conf:ConfigRef, w: WasmNode, seqlen = BiggestInt(-1)): seq
 
 proc callMagic(w:WasmGen, n: PNode, magic:TMagic): WasmNode =
   echo "#MAGIC: ", magic
-  echo w.config.treeToYaml(n)
   let b = w.graph.backend.Backend
   case magic:
   of mAddF64: result = newBinaryOp(fbAdd64, w.gen(n.sons[1],w.config), w.gen(n.sons[2],w.config))
@@ -402,6 +401,7 @@ proc callMagic(w:WasmGen, n: PNode, magic:TMagic): WasmNode =
         )
         b.moveStackPtrBy(son.typ.size) #size of a pointer TODO: read it from conf?
   else:
+    echo w.config.treeToYaml(n)
     w.config.internalError("TODO magic: " & $magic)
 
 proc genProc(w: WasmGen, n: PNode, conf: ConfigRef) =
@@ -946,7 +946,7 @@ proc genNimInit(b: Backend) =
   # Generate the init expression
   if b.nimInitBody.len<1: 
     echo "# Empty nimInitBody"
-    return # no expression, no need for a init proc
+  # FALSE: return # no expression, no need for a init proc
   b.m.functions.add(
     newFunction(
       b.nextFuncIdx, newType(vtNone),  newOpList(b.nimInitBody), @[], "nimInit", true
@@ -977,8 +977,8 @@ proc myProcess(b: PPassContext, n: PNode): PNode =
   var w = WasmGen(b)  
   result = n
   if passes.skipCodegen(w.config, n): return
-  if "test.nim" notin toFilename(w.config, n.info): return # FIXME: this skippes everything not coming from test.nim
   var backend = Backend(w.graph.backend)
+  if backend.m.name notin toFilename(w.config, n.info): return # FIXME: this skippes everything not coming from test.nim
   var transfN = transformStmt(w.graph,w.s,n)
   if transfN.kind in nkGenSkippedKinds: return
 
@@ -988,11 +988,12 @@ proc myProcess(b: PPassContext, n: PNode): PNode =
     # we dont call gen on transfN directly to avoid the whole module being processed at once, which fould screw up
     # with order of execution of load/stores when they are inserted by us, eg in callMagic
     let tmp = w.gen(son, w.config)
-    if not tmp.isNil:
-      if not(tmp.kind == opList and tmp.sons.len == 0): # reduces useless empty opLists
-        backend.nimInitBody.add(tmp)
-        #echo son.kind
-        #echo tmp.render
+    
+    # reduces useless empty opLists
+    if not tmp.isNil and not(tmp.kind == opList and tmp.sons.len == 0): 
+      backend.nimInitBody.add(tmp)
+      #echo son.kind
+      #echo tmp.render
   #if w.s.flags.contains(sfMainModule):
   #  echo w.config.treeToYaml(n)
   #  let generated = w.gen(n)

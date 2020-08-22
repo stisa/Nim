@@ -1,5 +1,6 @@
 discard """
   targets:  "wasm"
+  exitcode: 0
   action:   "run"
   timeout:  60.0
 """

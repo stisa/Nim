@@ -2,6 +2,7 @@ discard """
   targets:  "wasm"
   action:   "run"
   timeout:  60.0
+  exitcode: 0
 """
 
 proc log[T](x:T) {.header:"glue", importc:"log".}

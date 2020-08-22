@@ -2,6 +2,7 @@ discard """
   targets:  "wasm"
   action:   "run"
   timeout:  60.0
+  exitcode: 0
 """
 
 proc check[T](x:T) {.header:"glue", importc:"assert".}
