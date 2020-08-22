@@ -998,7 +998,6 @@ proc gen(w: WasmGen, n: PNode, conf: ConfigRef, parentKind: TNodeKind=nkNone): W
           b.m.globals.add(
             newGlobal(
               b.nextGlobalIdx, conf.mapType(s.typ), 
-              #w.gen(n.sons[2], conf, n.kind),
               newNop(), 
               exp, mut, n[0].sym.name.s
             )
@@ -1006,25 +1005,18 @@ proc gen(w: WasmGen, n: PNode, conf: ConfigRef, parentKind: TNodeKind=nkNone): W
           result = w.genAsgn(n[0], n[2], conf)
       else:
         echo "#GTL non literal RHS ", n.sons[2].kind, " for ", s.name.s
-        # FIXME:
-        b.m.globals.add(newGlobal(
-          b.nextGlobalIdx, 
-          conf.mapType(s.typ), 
-          w.gen(n.sons[2], conf, n.kind), 
-          exp,
-          mut, 
-          n[0].sym.name.s)
-        )  
-        #TODO: b.nimInitBody.add(w.gen(n.sons[2], conf, n.kind))
+        b.m.globals.add(
+          newGlobal(
+            b.nextGlobalIdx, conf.mapType(s.typ), 
+            newNop(), 
+            exp, mut, n[0].sym.name.s
+          )
+        )
+        result = w.genAsgn(n[0], n[2], conf)
       inc b.nextGlobalIdx
       echo "#nextglobalidx ", b.nextGlobalIdx
       echo "#globals", b.m.globals.len
-      #echo conf.symToYaml(n.sons[0].sym)
-      #echo conf.typeToYaml(s.typ)
-      #echo "#GTL: \n", conf.treeToYaml(n)
-    #else:
-    #  echo "#GTL skipped unused sym ", n.sons[0].sym.name.s 
-    #echo conf.treeToYaml(n)
+  
   of nkSym:
     echo "#GTL loading from sym ", n.sym.name.s
     #echo conf.symToYaml(n.sym)
