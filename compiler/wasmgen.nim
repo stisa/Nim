@@ -1016,6 +1016,17 @@ proc gen(w: WasmGen, n: PNode, conf: ConfigRef, parentKind: TNodeKind=nkNone): W
     echo "#GTL loading from sym ", n.sym.name.s
     #echo conf.symToYaml(n.sym)
     result = n.symLoc
+  of nkBlockStmt:
+    #echo conf.treeToYaml(n)
+    # TODO: is the outer block any use?
+    # n[0]: blockname, n[1] the body
+    result = w.gen(n[1], conf, n.kind)
+  of nkWhileStmt:
+    echo conf.treeToYaml(n)
+    result = newWhileLoop(
+      w.gen(n[0], conf, n.kind), # condition
+      w.gen(n[1], conf, n.kind)  # body
+    )
   of nkLiterals: #TODO: other literals
     result = w.genLit(n, conf, parentKind)
   of nkStmtList:
@@ -1291,7 +1302,7 @@ proc myClose(graph: ModuleGraph; b: PPassContext, n: PNode): PNode =
 
       # generate a js file suitable to be run by node
       writeFile($outfile.changeFileExt("js"), w.config.getConfigVar("glue.loaderNode") % [w.s.name.s, w.config.getConfigVar("glue.jsHelpers") % [w.s.name.s]])
-      # TODO: removeme
+      # TODO: remove this, no need for the html version if it's for nodejs
       writeFile($outfile.changeFileExt("html"), w.config.getConfigVar("glue.loader") % [w.s.name.s, w.config.getConfigVar("glue.jsHelpers") % [w.s.name.s]])
     else:
       writeFile($outfile.changeFileExt("html"), w.config.getConfigVar("glue.loader") % [w.s.name.s, w.config.getConfigVar("glue.jsHelpers") % [w.s.name.s]])
