@@ -2260,7 +2260,7 @@ when not defined(js):
 
 
 when notJSnotNims: # TODO: explore wasm
-  when hostOS != "standalone" and hostOS != "any":
+  when hostOS != "standalone" and hostOS != "any" and not defined wasm:
     include "system/dyncalls"
 
   include "system/sets" # TODO: explore wasm

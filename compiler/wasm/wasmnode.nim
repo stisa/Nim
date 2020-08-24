@@ -47,6 +47,7 @@ proc newGet*(op:WasmOpKind,idx:int):WasmNode =
   assert op in {woGetGlobal,woGetLocal}
   result = newWANode(op)
   result.index = idx
+
 proc newSet*(op:WasmOpKind,idx:int, what:WasmNode):WasmNode =
   assert op in {woSetLocal,woSetGlobal}
   result = newWANode(op)
