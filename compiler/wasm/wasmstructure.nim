@@ -108,6 +108,7 @@ proc newModule*(nm: string=""): WAsmModule =
   result = WAsmModule(name: nm)
   result.imports = @[]
   result.exports = @[]
+  result.globals = @[]
   result.functions = @[]
   result.data = @[]
   result.memory = newMemory(0)

@@ -1127,7 +1127,7 @@ const
     ## is the value that should be passed to `quit <#quit,int>`_ to indicate
     ## failure.
 
-when not defined(js) and hostOS != "standalone":
+when not defined(js) and not defined(wasm) and hostOS != "standalone":
   var programResult* {.compilerproc, exportc: "nim_program_result".}: int
     ## deprecated, prefer `quit` or `exitprocs.getProgramResult`, `exitprocs.setProgramResult`.
 
@@ -1179,6 +1179,10 @@ elif defined(js) and defined(nodejs) and not defined(nimscript):
   proc quit*(errorcode: int = QuitSuccess) {.magic: "Exit",
     importc: "process.exit", noreturn.}
 
+elif defined(wasm):
+  proc quit*(errorcode: int = QuitSuccess) {.magic: "Exit",
+    importc: "exit", header: "glue" noreturn.}
+
 else:
   proc quit*(errorcode: int = QuitSuccess) {.
     magic: "Exit", importc: "exit", header: "<stdlib.h>", noreturn.}
@@ -1194,7 +1198,7 @@ template sysAssert(cond: bool, msg: string) =
 
 const hasAlloc = (hostOS != "standalone" or not defined(nogc)) and not defined(nimscript)
 
-when notJSnotNims and hostOS != "standalone" and hostOS != "any":
+when notJSnotNims and hostOS != "standalone" and hostOS != "any" and not defined(wasm):
   include "system/cgprocs"
 when notJSnotNims and hasAlloc and not defined(nimSeqsV2):
   proc addChar(s: NimString, c: char): NimString {.compilerproc, benign.}
@@ -1473,7 +1477,7 @@ const
     ## in the `math module <math.html>`_ for checking for NaN.
 
 
-include "system/memalloc"
+include "system/memalloc"  #TODO: wasm
 
 
 proc `|`*(a, b: typedesc): typedesc = discard
@@ -1695,7 +1699,7 @@ proc compiles*(x: untyped): bool {.magic: "Compiles", noSideEffect, compileTime.
   ##     echo "'+' for integers is available"
   discard
 
-when notJSnotNims:
+when notJSnotNims: # TODO: wasm explore
   import "system/ansi_c"
   import "system/memory"
 
@@ -1707,7 +1711,7 @@ when not defined(js) and hasThreadSupport and hostOS != "standalone":
   include "system/syslocks"
   include "system/threadlocalstorage"
 
-when not defined(js) and defined(nimV2):
+when not defined(js) and defined(nimV2): # TODO: explore wasm
   type
     TNimNode {.compilerproc.} = object # to keep the code generator simple
     DestructorProc = proc (p: pointer) {.nimcall, benign, raises: [].}
@@ -1720,22 +1724,22 @@ when not defined(js) and defined(nimV2):
       disposeImpl: pointer
     PNimType = ptr TNimType
 
-when notJSnotNims and defined(nimSeqsV2):
+when notJSnotNims and defined(nimSeqsV2): # TODO: explore wasm
   include "system/strs_v2"
   include "system/seqs_v2"
 
 {.pop.}
 
-when notJSnotNims and not defined wasm:
+when notJSnotNims: # TODO: explore wasm
   proc writeStackTrace*() {.tags: [], gcsafe, raises: [].}
     ## Writes the current stack trace to ``stderr``. This is only works
     ## for debug builds. Since it's usually used for debugging, this
     ## is proclaimed to have no IO effect!
 
-when not declared(sysFatal):
+when not declared(sysFatal): # TODO: explore wasm
   include "system/fatal"
 
-when notJSnotNims:
+when notJSnotNims: # TODO: explore wasm
   {.push stackTrace: off, profiler: off.}
 
   proc atomicInc*(memLoc: var int, x: int = 1): int {.inline,
@@ -1751,13 +1755,13 @@ when notJSnotNims:
   {.pop.}
 
 
-when defined(nimV2):
+when defined(nimV2): # TODO: explore wasm
   include system/arc
 
-import system/assertions
+import system/assertions# TODO: explore wasm
 export assertions
 
-import system/iterators
+import system/iterators# TODO: explore wasm
 export iterators
 
 
@@ -1827,7 +1831,7 @@ proc `<`*[T: tuple](x, y: T): bool =
   return false
 
 
-include "system/gc_interface"
+include "system/gc_interface" # TODO: explore wasm != nogc
 
 # we have to compute this here before turning it off in except.nim anyway ...
 const NimStackTrace = compileOption("stacktrace")
@@ -1858,6 +1862,8 @@ else:
 # however, stack-traces are available for most parts
 # of the code
 
+
+# what about these? # TODO: explore wasm
 var
   globalRaiseHook*: proc (e: ref Exception): bool {.nimcall, benign.}
     ## With this hook you can influence exception handling on a global level.
@@ -1932,7 +1938,7 @@ when defined(js):
     """
   proc add*(x: var cstring, y: cstring) {.magic: "AppendStrStr".}
 
-elif hasAlloc:
+elif hasAlloc: # TODO: explore wasm, and also how is len/cap set?
   {.push stackTrace: off, profiler: off.}
   proc add*(x: var string, y: cstring) =
     var i = 0
@@ -2007,7 +2013,7 @@ proc abs*(x: int64): int64 {.magic: "AbsI", noSideEffect.} =
   result = if x < 0: -x else: x
 {.pop.}
 
-when not defined(js):
+when not defined(js) or not defined(wasm):
 
   proc likelyProc(val: bool): bool {.importc: "NIM_LIKELY", nodecl, noSideEffect.}
   proc unlikelyProc(val: bool): bool {.importc: "NIM_UNLIKELY", nodecl, noSideEffect.}
@@ -2031,7 +2037,7 @@ template likely*(val: bool): bool =
   when nimvm:
     val
   else:
-    when defined(js):
+    when defined(js) or defined(wasm):
       val
     else:
       likelyProc(val)
@@ -2055,7 +2061,7 @@ template unlikely*(val: bool): bool =
   when nimvm:
     val
   else:
-    when defined(js):
+    when defined(js) or defined(wasm):
       val
     else:
       unlikelyProc(val)
@@ -2076,7 +2082,7 @@ const
     ## is the patch number of Nim's version.
     ## Odd for devel, even for releases.
 
-import system/dollars
+import system/dollars # TODO: explore wasm
 export dollars
 
 const
@@ -2093,7 +2099,7 @@ type
     fspEnd            ## Seek relative to end
 
 
-when not defined(js):
+when not defined(js): # TODO: explore wasm
   {.push stackTrace: off, profiler: off.}
 
   when hasAlloc:
@@ -2129,7 +2135,7 @@ when not defined(js):
   # the mysterious error message
   {.push stackTrace: off, profiler: off.}
 
-when notJSnotNims:
+when notJSnotNims: # TODO: explore wasm
   proc zeroMem(p: pointer, size: Natural) =
     nimZeroMem(p, size)
     when declared(memTrackerOp):
@@ -2145,7 +2151,7 @@ when notJSnotNims:
   proc equalMem(a, b: pointer, size: Natural): bool =
     nimCmpMem(a, b, size) == 0
 
-when not defined(js):
+when not defined(js): # TODO: explore wasm
   proc cmp(x, y: string): int =
     when nimvm:
       if x < y: result = -1
@@ -2173,7 +2179,7 @@ when not defined(js):
       result = cstringArrayToSeq(a, L)
 
 
-when not defined(js) and declared(alloc0) and declared(dealloc):
+when not defined(js) and declared(alloc0) and declared(dealloc): # TODO: explore wasm
   proc allocCStringArray*(a: openArray[string]): cstringArray =
     ## Creates a NULL terminated cstringArray from `a`. The result has to
     ## be freed with `deallocCStringArray` after it's not needed anymore.
@@ -2192,7 +2198,7 @@ when not defined(js) and declared(alloc0) and declared(dealloc):
       inc(i)
     dealloc(a)
 
-when notJSnotNims:
+when notJSnotNims: # TODO: explore wasm
   type
     PSafePoint = ptr TSafePoint
     TSafePoint {.compilerproc, final.} = object
@@ -2201,7 +2207,7 @@ when notJSnotNims:
       context: C_JmpBuf
     SafePoint = TSafePoint
 
-when not defined(js):
+when not defined(js): # TODO: explore wasm
   when declared(initAllocator):
     initAllocator()
   when hasThreadSupport:
@@ -2210,7 +2216,7 @@ when not defined(js):
     when not defined(useNimRtl) and not defined(createNimRtl): initStackBottom()
     when declared(initGC): initGC()
 
-when notJSnotNims:
+when notJSnotNims: # TODO: explore wasm
   proc setControlCHook*(hook: proc () {.noconv.})
     ## Allows you to override the behaviour of your application when CTRL+C
     ## is pressed. Only one such hook is supported.
@@ -2234,15 +2240,15 @@ when notJSnotNims:
   when hostOS == "standalone":
     include "system/embedded"
   else:
-    include "system/excpt"
-  include "system/chcks"
+    include "system/excpt" # TODO: explore wasm
+  include "system/chcks" # TODO: explore wasm
 
   # we cannot compile this with stack tracing on
   # as it would recurse endlessly!
   when defined(nimNewIntegerOps):
-    include "system/integerops"
+    include "system/integerops" # TODO: explore wasm
   else:
-    include "system/arithm"
+    include "system/arithm" # TODO: explore wasm
   {.pop.}
 
 
@@ -2253,11 +2259,11 @@ when not defined(js):
 
 
 
-when notJSnotNims:
+when notJSnotNims: # TODO: explore wasm
   when hostOS != "standalone" and hostOS != "any":
     include "system/dyncalls"
 
-  include "system/sets"
+  include "system/sets" # TODO: explore wasm
 
   when defined(gogc):
     const GenericSeqSize = (3 * sizeof(int))
@@ -2288,7 +2294,7 @@ when notJSnotNims:
       else:
         result = n.sons[n.len]
 
-when notJSnotNims and hasAlloc:
+when notJSnotNims and hasAlloc: # TODO: explore wasm
   {.push profiler: off.}
   include "system/mmdisp"
   {.pop.}
@@ -2303,11 +2309,11 @@ when notJSnotNims and hasAlloc:
   when not defined(nimV2):
     include "system/repr"
 
-when notJSnotNims and hasThreadSupport and hostOS != "standalone":
+when notJSnotNims and hasThreadSupport and hostOS != "standalone": # TODO: explore wasm
   include "system/channels"
 
 
-when notJSnotNims and hostOS != "standalone":
+when notJSnotNims and hostOS != "standalone": # TODO: explore wasm
   proc getCurrentException*(): ref Exception {.compilerRtl, inl, benign.} =
     ## Retrieves the current exception; if there is none, `nil` is returned.
     result = currException
@@ -2329,7 +2335,7 @@ when notJSnotNims and hostOS != "standalone":
     currException = exc
 
 
-when notJSnotNims:
+when notJSnotNims: # TODO: explore wasm
   {.push stackTrace: off, profiler: off.}
   when (defined(profiler) or defined(memProfiler)):
     include "system/profiler"
@@ -2355,7 +2361,7 @@ when notJSnotNims:
     `result` = ((NI*) `x`.ClE_0)[1] < 0;
     """.}
 
-when defined(js):
+when defined(js): # TODO: explore wasm
   when not defined(nimscript):
     include "system/jssys"
     include "system/reprjs"
@@ -2365,7 +2371,7 @@ when defined(js):
       if x < y: return -1
       return 1
 
-when defined(js) or defined(nimscript):
+when defined(js) or defined(nimscript): # TODO: explore wasm
   proc addInt*(result: var string; x: int64) =
     result.add $x
 
@@ -2672,7 +2678,7 @@ else:
 when not defined(nimhygiene):
   {.pragma: inject.}
 
-proc shallow*[T](s: var seq[T]) {.noSideEffect, inline.} =
+proc shallow*[T](s: var seq[T]) {.noSideEffect, inline.} = # TODO: explore wasm
   ## Marks a sequence `s` as `shallow`:idx:. Subsequent assignments will not
   ## perform deep copies of `s`.
   ##
@@ -2682,7 +2688,7 @@ proc shallow*[T](s: var seq[T]) {.noSideEffect, inline.} =
     var s = cast[PGenericSeq](s)
     s.reserved = s.reserved or seqShallowFlag
 
-proc shallow*(s: var string) {.noSideEffect, inline.} =
+proc shallow*(s: var string) {.noSideEffect, inline.} = # TODO: explore wasm
   ## Marks a string `s` as `shallow`:idx:. Subsequent assignments will not
   ## perform deep copies of `s`.
   ##
@@ -2701,7 +2707,7 @@ type
   NimNode* {.magic: "PNimrodNode".} = ref NimNodeObj
     ## Represents a Nim AST node. Macros operate on this type.
 
-when defined(nimV2):
+when defined(nimV2): # TODO: explore wasm
   import system/repr_v2
   export repr_v2
 
@@ -2855,7 +2861,7 @@ proc locals*(): RootObj {.magic: "Plugin", noSideEffect.} =
   ##   # -> B is 1
   discard
 
-when hasAlloc and notJSnotNims and not usesDestructors:
+when hasAlloc and notJSnotNims and not usesDestructors: # TODO: explore wasm
   # XXX how to implement 'deepCopy' is an open problem.
   proc deepCopy*[T](x: var T, y: T) {.noSideEffect, magic: "DeepCopy".} =
     ## Performs a deep copy of `y` and copies it into `x`.
@@ -2868,7 +2874,7 @@ when hasAlloc and notJSnotNims and not usesDestructors:
     ## Convenience wrapper around `deepCopy` overload.
     deepCopy(result, y)
 
-  include "system/deepcopy"
+  include "system/deepcopy" # TODO: explore wasm
 
 proc procCall*(x: untyped) {.magic: "ProcCall", compileTime.} =
   ## Special magic to prohibit dynamic binding for `method`:idx: calls.
@@ -2879,8 +2885,8 @@ proc procCall*(x: untyped) {.magic: "ProcCall", compileTime.} =
   ##   procCall someMethod(a, b)
   discard
 
-
-proc `==`*(x, y: cstring): bool {.magic: "EqCString", noSideEffect,
+#[TODO: explore wasm]#
+proc `==`*(x, y: cstring): bool {.magic: "EqCString", noSideEffect, 
                                    inline.} =
   ## Checks for equality between two `cstring` variables.
   proc strcmp(a, b: cstring): cint {.noSideEffect,
@@ -2975,7 +2981,7 @@ proc substr*(s: string, first = 0): string =
 when defined(nimconfig):
   include "system/nimscript"
 
-when not defined(js):
+when not defined(js): #[TODO: explore wasm]#
   proc toOpenArray*[T](x: ptr UncheckedArray[T]; first, last: int): openArray[T] {.
     magic: "Slice".}
   when defined(nimToOpenArrayCString):
@@ -3027,10 +3033,10 @@ when defined(genode):
 
 when not defined wasm:
 
-  import system/widestrs
-  export widestrs
+  import system/widestrs #[TODO: explore wasm]#
+  export widestrs #[TODO: explore wasm]#
 
-  import system/io
+  import system/io #[TODO: explore wasm]#
   export io
 else:
   {.warning: "system/io, widestrs missing for wasm".}

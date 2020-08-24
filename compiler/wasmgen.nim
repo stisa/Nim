@@ -903,7 +903,7 @@ proc gen(w: WasmGen, n: PNode, conf: ConfigRef, parentKind: TNodeKind=nkNone): W
       of vtF32: convOP = cvConvertF32S_I32
       of vtF64: convOP = cvConvertF64S_I32
       of vtI64: convOP = cvExtendI64S_I32
-      else: w.config.internalError("#nkHiddenStdConv2")
+      else: w.config.internalError("#nkHiddenStdConv1")
     of vtF32:
       case w.config.mapType(n.typ):
       of vtI32: convOP = cvTruncI32S_F32
@@ -917,15 +917,15 @@ proc gen(w: WasmGen, n: PNode, conf: ConfigRef, parentKind: TNodeKind=nkNone): W
       of vtF32: convOP = cvDemoteF32_F64
       of vtF64: convOP = woNop
       of vtI64: convOP = cvTruncI64S_F64
-      else: w.config.internalError("#nkHiddenStdConv2")
+      else: w.config.internalError("#nkHiddenStdConv3")
     of vtI64:
       case w.config.mapType(n.typ):
       of vtI32: convOP = cvWrapI32_I64
       of vtF32: convOP = cvConvertF32S_I64
       of vtF64: convOP = cvConvertF64S_I64
       of vtI64: convOP = woNop
-      else: w.config.internalError("#nkHiddenStdConv2")
-    else: w.config.internalError("#nkHiddenStdConv2")
+      else: w.config.internalError("#nkHiddenStdConv4")
+    else: w.config.internalError("#nkHiddenStdConv5")
     if convOP == woNop:
       result = w.gen(n[1], conf) 
     else:
@@ -1046,7 +1046,7 @@ proc gen(w: WasmGen, n: PNode, conf: ConfigRef, parentKind: TNodeKind=nkNone): W
     result = w.genAsgn(n[0], n[1], conf)
   of nkReturnStmt:
     result = newReturn(w.gen(n.sons[0],conf))
-  of nkHiddenAddr, nkAddr:
+  of nkHiddenAddr: # TODO: nkAddr
     # to generate:
     # get global
     # store 
