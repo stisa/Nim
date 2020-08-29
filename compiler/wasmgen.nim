@@ -19,16 +19,16 @@ type
     #sigConflicts: CountTable[SigHash]
   
   Backend = ref object of RootRef
-    nimInitBody: seq[WasmNode] # sequence of initializer expressions. for use in start sec
+    nimInitBody: seq[WasmNode] # sequence of operations that make up the top-level of the program
     nextImportIdx: Natural # function index space ( doesn't account for hoisting of imported procs )
     nextFuncIdx: Natural # the function index space (only for non-imported funcs)
     nextGlobalIdx: Natural # the global index space
     nextMemIdx: Natural # the linear memory index space
     nextTableIdx: Natural # the table index space
-    m : WAsmModule #current module
+    m : WAsmModule #current wasm module
     generatedProcs: Table[PSym,tuple[id:int,imported:bool]] # name, funcIdx
-    generatedTypeInfos: Table[string, int32] # name, location in memory
-    locs: tuple[stack,heap:int32] # stack pointers location, used in procs? stack is Used as compile time stack ptr
+    generatedTypeInfos: Table[string, int32] # name, location in memory TODO:
+    locs: tuple[stack,heap:int32] # stack is Used as compile time stack ptr
 
 
 const
@@ -61,6 +61,7 @@ proc newBackend(modulename:string): Backend =
   result.locs = (12'i32, 0'i32)
 
 proc updateBackendName(b: Backend, name:string) = b.m.name = name
+
 proc moveStackPtrBy(b:Backend, bytes:BiggestInt) =
   b.locs.stack += bytes.int32
 
@@ -73,18 +74,14 @@ proc updateLoc(s: PSym, loc: int, kind: TLocKind, skind: TStorageLoc) =
   s.loc.r = loc.rope # for debug purposes
 
 proc getLoc(s: PSym): int =
-  # TODO: if sym is a param, this should be:
-  # result = newGet(woGetLocal, s.position) or something like that
-  if s.loc.k == locGlobalVar:
-    result = s.loc.pos
-  else:
+  result = s.loc.pos  
+  if s.loc.k != locGlobalVar:
     echo "#getloc: TODO: other than global"
 
 proc hash(s:PSym): Hash = hash(s.mangleName)
 
 proc symLoc(conf: ConfigRef, n: PNode): WasmNode =
-  # TODO: if sym is a param, this should be:
-  # result = newGet(woGetLocal, s.position) or something like that
+  # TODO: study var params
   if n.kind == nkSym:
     if n.sym.kind == skParam:
         result = newGet(woGetLocal, n.sym.position)
@@ -93,62 +90,12 @@ proc symLoc(conf: ConfigRef, n: PNode): WasmNode =
     elif n.sym.loc.storage == OnHeap:
       result = newLoad(conf.mapLoadKind(n.sym.typ), 0, 1, newConst(n.sym.loc.pos))
     else:
-      echo "#symloc: TODO: other than global"
+      conf.internalError "#symloc: TODO: other than global"
   else:
-    echo "#NOT A SYM for Symloc"
+    conf.internalError "#NOT A SYM for Symloc"
 
 proc hasProc(b: Backend, sym: PSym): bool =
   sym in b.generatedProcs
-
-proc getProc(b: Backend, sym: PSym): tuple[id: int, imported: bool] =
-  b.generatedProcs[sym]
-
-# this is to persist the backend between modules, 
-# otherwise it would get reinited at every myOpen of a new module
-# TODO: move logic for this  in open...
-var backend: Backend = newBackend("main")
-
-proc newWasmGen(s:PSym, g: ModuleGraph): WasmGen =
-  result = WasmGen(s: s, graph:g, config: g.config)
-
-proc storeLit(b: Backend, n: PNode, conf: ConfigRef): WasmNode {.deprecated.} =
-  # n0: sym / n1: typ|empty / n2: val
-  #echo "#STORE ", conf.treeToYaml(n)
-  var typ = n.sons[1].typ
-  if typ.isNil: typ = n.sons[0].sym.typ
-  echo "#STORE type ", typ.kind
-  # a var section stores its data in `data` or has an
-  # initialization expr, so no node is returned.
-  var dataseg: seq[byte] = newSeq[byte]()
-  result = newOpList() # FIXME: remove since it's not used? May be useful for str/array etc
-  if not(typ.kind notin ConcreteTypes):
-    # get a concrete type we can use to decide how to store data
-    typ = typ.skipTypes(abstractInst)
-  
-  case typ.kind:
-  of tyBool, tyChar, tyEnum, tyInt..tyInt32: # TODO: fix store size when size < 4bytes
-    # for tyEnum, n[2] can be nkSym kind skEnumField
-    if n.sons[2].kind == nkSym and n.sons[2].sym.kind == skEnumField:
-      # in this case, the ordinal value of the enum is in sym.position
-      dataseg = n.sons[2].sym.position.int32.toBytes
-    else:
-      dataseg = n.sons[2].getInt.toInt32.toBytes
-  of tyString, tyCString, tyPtr, tyRef, tyVar, tyProc, tyPointer:
-    echo "#STORE unhandled type: ", $typ.kind
-  of tyFloat32:
-    dataseg = n.sons[2].getFloat.float32.toBytes
-  of tyFloat, tyFloat64:
-    dataseg = n.sons[2].getFloat.float64.toBytes
-  of tyUInt..tyUInt32:
-    dataseg = n.sons[2].getInt.toUInt32.toBytes
-  of tyArray, tyOpenArray, tyObject, tySet, tyTuple, tyRange, 
-    tyLent, tySequence, tyInt64, tyUInt64, tyFloat128:
-    echo "#STORE shouldn't be possible: illegal ", $typ.kind
-  else:
-    echo "#STORE unhandled type: ", $typ.kind
-  
-  b.m.data.add(newData(b.stackptr, dataseg, n.sons[0].sym.name.s))
-  b.moveStackPtrBy(dataseg.len) # TODO: alignTo4 ??? 
 
 const nkGenSkippedKinds = { nkCommentStmt, nkPragma, nkEmpty, 
                             nkTemplateDef, nkFuncDef, nkProcDef, nkMethodDef, 
@@ -161,168 +108,11 @@ const nkSectionKinds = {nkVarSection, nkConstSection, nkLetSection}
 
 proc gen(w: WasmGen, n: PNode, conf: ConfigRef, parentKind: TNodeKind=nkNone): WasmNode
 
-#[
-    nkCommand,            # a call like ``p 2, 4`` without parenthesis
-    nkCall,               # a call like p(x, y) or an operation like +(a, b)
-    nkCallStrLit,         # a call with a string literal
-                          # x"abc" has two sons: nkIdent, nkRStrLit
-                          # x"""abc""" has two sons: nkIdent, nkTripleStrLit
-    nkInfix,              # a call like (a + b)
-    nkPrefix,             # a call like !a
-    nkPostfix,            # something like a! (also used for visibility)
-    nkHiddenCallConv,     # an implicit type conversion via a type converter
-
-    nkExprEqExpr,         # a named parameter with equals: ''expr = expr''
-    nkExprColonExpr,      # a named parameter with colon: ''expr: expr''
-    nkIdentDefs,          # a definition like `a, b: typeDesc = expr`
-                          # either typeDesc or expr may be nil; used in
-                          # formal parameters, var statements, etc.
-    nkVarTuple,           # a ``var (a, b) = expr`` construct
-    nkPar,                # syntactic (); may be a tuple constructor
-    nkObjConstr,          # object constructor: T(a: 1, b: 2)
-    nkCurly,              # syntactic {}
-    nkCurlyExpr,          # an expression like a{i}
-    nkBracket,            # syntactic []
-    nkBracketExpr,        # an expression like a[i..j, k]
-    nkPragmaExpr,         # an expression like a{.pragmas.}
-    nkRange,              # an expression like i..j
-    nkDotExpr,            # a.b
-    nkCheckedFieldExpr,   # a.b, but b is a field that needs to be checked
-    nkDerefExpr,          # a^
-    nkIfExpr,             # if as an expression
-    nkElifExpr,
-    nkElseExpr,
-    nkLambda,             # lambda expression
-    nkDo,                 # lambda block appering as trailing proc param
-    nkAccQuoted,          # `a` as a node
-
-    nkTableConstr,        # a table constructor {expr: expr}
-    nkBind,               # ``bind expr`` node
-    nkClosedSymChoice,    # symbol choice node; a list of nkSyms (closed)
-    nkOpenSymChoice,      # symbol choice node; a list of nkSyms (open)
-    nkHiddenStdConv,      # an implicit standard type conversion
-    nkHiddenSubConv,      # an implicit type conversion from a subtype
-                          # to a supertype
-    nkConv,               # a type conversion
-    nkCast,               # a type cast
-    nkStaticExpr,         # a static expr
-    nkAddr,               # a addr expression
-    nkHiddenAddr,         # implicit address operator
-    nkHiddenDeref,        # implicit ^ operator
-    nkObjDownConv,        # down conversion between object types
-    nkObjUpConv,          # up conversion between object types
-    nkChckRangeF,         # range check for floats
-    nkChckRange64,        # range check for 64 bit ints
-    nkChckRange,          # range check for ints
-    nkStringToCString,    # string to cstring
-    nkCStringToString,    # cstring to string
-                          # end of expressions
-
-    nkAsgn,               # a = b
-    nkFastAsgn,           # internal node for a fast ``a = b``
-                          # (no string copy)
-    nkGenericParams,      # generic parameters
-    nkFormalParams,       # formal parameters
-    nkOfInherit,          # inherited from symbol
-
-    nkImportAs,           # a 'as' b in an import statement
-    nkProcDef,            # a proc
-    nkMethodDef,          # a method
-    nkConverterDef,       # a converter
-    nkMacroDef,           # a macro
-    nkTemplateDef,        # a template
-    nkIteratorDef,        # an iterator
-
-    nkOfBranch,           # used inside case statements
-                          # for (cond, action)-pairs
-    nkElifBranch,         # used in if statements
-    nkExceptBranch,       # an except section
-    nkElse,               # an else part
-    nkAsmStmt,            # an assembler block
-    nkPragma,             # a pragma statement
-    nkPragmaBlock,        # a pragma with a block
-    nkIfStmt,             # an if statement
-    nkWhenStmt,           # a when expression or statement
-    nkForStmt,            # a for statement
-    nkParForStmt,         # a parallel for statement
-    nkWhileStmt,          # a while statement
-    nkCaseStmt,           # a case statement
-    nkTypeSection,        # a type section (consists of type definitions)
-    nkVarSection,         # a var section
-    nkLetSection,         # a let section
-    nkConstSection,       # a const section
-    nkConstDef,           # a const definition
-    nkTypeDef,            # a type definition
-    nkYieldStmt,          # the yield statement as a tree
-    nkDefer,              # the 'defer' statement
-    nkTryStmt,            # a try statement
-    nkFinally,            # a finally section
-    nkRaiseStmt,          # a raise statement
-    nkReturnStmt,         # a return statement
-    nkBreakStmt,          # a break statement
-    nkContinueStmt,       # a continue statement
-    nkBlockStmt,          # a block statement
-    nkStaticStmt,         # a static statement
-    nkDiscardStmt,        # a discard statement
-    nkStmtList,           # a list of statements
-    nkImportStmt,         # an import statement
-    nkImportExceptStmt,   # an import x except a statement
-    nkExportStmt,         # an export statement
-    nkExportExceptStmt,   # an 'export except' statement
-    nkFromStmt,           # a from * import statement
-    nkIncludeStmt,        # an include statement
-    nkBindStmt,           # a bind statement
-    nkMixinStmt,          # a mixin statement
-    nkUsingStmt,          # an using statement
-    nkCommentStmt,        # a comment statement
-    nkStmtListExpr,       # a statement list followed by an expr; this is used
-                          # to allow powerful multi-line templates
-    nkBlockExpr,          # a statement block ending in an expr; this is used
-                          # to allow powerful multi-line templates that open a
-                          # temporary scope
-    nkStmtListType,       # a statement list ending in a type; for macros
-    nkBlockType,          # a statement block ending in a type; for macros
-                          # types as syntactic trees:
-
-    nkWith,               # distinct with `foo`
-    nkWithout,            # distinct without `foo`
-
-    nkTypeOfExpr,         # type(1+2)
-    nkObjectTy,           # object body
-    nkTupleTy,            # tuple body
-    nkTupleClassTy,       # tuple type class
-    nkTypeClassTy,        # user-defined type class
-    nkStaticTy,           # ``static[T]``
-    nkRecList,            # list of object parts
-    nkRecCase,            # case section of object
-    nkRecWhen,            # when section of object
-    nkRefTy,              # ``ref T``
-    nkPtrTy,              # ``ptr T``
-    nkVarTy,              # ``var T``
-    nkConstTy,            # ``const T``
-    nkMutableTy,          # ``mutable T``
-    nkDistinctTy,         # distinct type
-    nkProcTy,             # proc type
-    nkIteratorTy,         # iterator type
-    nkSharedTy,           # 'shared T'
-                          # we use 'nkPostFix' for the 'not nil' addition
-    nkEnumTy,             # enum body
-    nkEnumFieldDef,       # `ident = expr` in an enumeration
-    nkArgList,            # argument list
-    nkPattern,            # a special pattern; used for matching
-    nkHiddenTryStmt,      # a hidden try statement
-    nkClosure,            # (prc, env)-pair (internally used for code gen)
-    nkGotoState,          # used for the state machine (for iterators)
-    nkState,              # give a label to a code section (for iterators)
-    nkBreakState,         # special break statement for easier code generation
-    nkFuncDef,            # a func
-    nkTupleConstr         # a tuple constructor
-
-]#
 proc exportOrUsed(s: PSym): bool =
   ( s.flags.contains(sfExported) and 
     s.skipGenericOwner.flags.contains(sfMainModule)
   ) or s.flags.contains(sfUsed)
+
 proc wasmConstToBytes(conf:ConfigRef, w: WasmNode, seqlen = BiggestInt(-1)): seq[byte] =
   result = @[] 
   case w.kind
@@ -398,7 +188,17 @@ proc callMagic(w:WasmGen, n: PNode, magic:TMagic): WasmNode =
   echo "#MAGIC: ", magic
   let b = w.graph.backend.Backend
   case magic:
-  #[# the idea for string conversion of numbers:
+  #[# the new idea for string conversion of numbers:
+    # call a js side intToStr that takes a number and writes out the string to memory with TextEncoder
+    # return the ptr to wasm, then wasm can just use that ptr.
+    # in future, this would be similar to how c does it, just need to override c_sprintf
+    # that is used in formatfloat with a js one
+    of mIntToStr, nimFloatToStr:
+      if not b.hasProc(n[0].sym):
+        w.genImportedProc(n[0].sym) # params type and return type can be gotten from the ast of the procdef, maybe name too to make it super generic? And glue is hardcoded anyway
+      let idx, imported = b.generatedProcs[n[0].sym]
+      result = newCall(idx, w.gen(n[1], conf, imported))
+    # old vvv
     # push values to the memory, then give the pointer to that memory to echo
     let vallen = if magic==mIntToStr: 4'i32 else: 8'i32
     let storekind = if magic==mIntToStr: memStoreI32 else: memStoreF64
@@ -847,7 +647,7 @@ proc genCall(w: WasmGen, n: PNode, conf: ConfigRef, parentKind: TNodeKind=nkNone
     #FIXME: generate proc for non imported procs
     w.genProc(n.sons[0], conf)
   
-  let (id, isImport) = b.getProc(n.sons[0].sym)
+  let (id, isImport) = b.generatedProcs[n.sons[0].sym]
   
   var args : seq[WasmNode] = @[]
   #if n.sons[0].sym.ast[resultPos].kind != nkEmpty:
@@ -901,8 +701,10 @@ proc genVar(w: WasmGen, n: PNode, conf: ConfigRef, parentKind: TNodeKind=nkNone)
         mut = parentKind == nkVarSection
         exp = s.owner.flags.contains(sfMainModule) and s.flags.contains(sfExported)
       if not mut: conf.internalError("let/const went through the wrong codegen path")
-      
-      s.updateLoc(b.stackptr, locGlobalVar, OnHeap) # OnStatic means let/const are in a wasm global/local
+      let lockind = if s.owner.kind == skModule: locGlobalVar
+                    else: locLocalVar
+      s.updateLoc(b.stackptr, lockind, OnHeap) # OnHeap => on the linear memory
+      # TODO: differntiate between OnHeap(refs)/OnStack(rest)
       
       # if sons[2](aka val) is nkEmpty, we can skip the generation by just moving 
       # the stack pointer by size(type), otherwise we actually have to perform the store
@@ -1006,29 +808,22 @@ proc gen(w: WasmGen, n: PNode, conf: ConfigRef, parentKind: TNodeKind=nkNone): W
     let s = n.sons[0].sym
 
     if s.exportOrUsed:
-      
+      # TODO: if s.owner.kind == skProc: use locals (locals don't need to be created)   
       let 
-        mut = parentKind == nkVarSection
+        mut = parentKind == nkLetSection # let section may need to be updated at runtime
         exp = s.owner.flags.contains(sfMainModule) and s.flags.contains(sfExported)
-      if mut: conf.internalError("var identdef went through the wrong codegen path")
+      if parentKind == nkVarSection: conf.internalError("var identdef went through the wrong codegen path")
+      let lockind = locGlobalVar # TODO: if s.owner.kind == skModule: locGlobalVar
+                    #else: locLocalVar
+      s.updateLoc(b.nextGlobalIdx, lockind, OnStatic) # OnStatic means let/const are in a wasm global/local
       
-      s.updateLoc(b.nextGlobalIdx, locGlobalVar, OnStatic) # OnStatic means let/const are in a wasm global/local
       
-      
-      # if sons[2](aka val) is nkEmpty, we can skip the generation by just moving 
-      # the stack pointer by size(type), otherwise we actually have to perform the store
       if n.sons[2].kind in {nkEmpty, nkNilLit} :
-        # TODO: match the type and value type
-        # TODO: only export some globals
         b.m.globals.add(newGlobal(b.nextGlobalIdx, conf.mapType(s.typ), newConst(0'i32),exp, mut, n[0].sym.name.s))  
-        
-      #  echo "#GTL elided store due to empty val ", s.name.s
-      #  b.moveStackPtrBy(s.typ.size)
       elif n.sons[2].kind in nkLiterals-nkStrKinds:
         # for numericals, just store in the global
         b.m.globals.add(newGlobal(b.nextGlobalIdx, conf.mapType(s.typ), w.genLit(n.sons[2],conf, n.kind), exp, mut, n[0].sym.name.s))  
-                                              # TODO: nimInitBody part is useless for literals?
-                                              # it may be useful for arrays? I doubt it.
+                    
       #elif n.sons[2].kind in {nkCurly,nkBracket,nkObjConstr}:
       #  #TODO: non-literal store
       #  echo "#GTL non literal store ", n.sons[2].kind, " for ", s.name.s
@@ -1060,23 +855,23 @@ proc gen(w: WasmGen, n: PNode, conf: ConfigRef, parentKind: TNodeKind=nkNone): W
           b.m.globals.add(
             newGlobal(
               b.nextGlobalIdx, conf.mapType(s.typ), 
-              #newNop(), 
-              w.gen(n[2], conf, nkAsgn),
+              newNop(), 
+              #w.gen(n[2], conf, n.kind),
               exp, mut, n[0].sym.name.s
             )
           )
-          #result = newSet(woSetGlobal, n[0].sym.getLoc, w.gen(n[2], conf, nkAsgn))
+          result = newSet(woSetGlobal, n[0].sym.getLoc, w.gen(n[2], conf, nkAsgn))
           
       else:
         echo "#GTL non literal RHS ", n.sons[2].kind, " for ", s.name.s
         b.m.globals.add(
           newGlobal(
             b.nextGlobalIdx, conf.mapType(s.typ), 
-            w.gen(n[2], conf, nkAsgn),# newNop(), 
+            newNop(), #w.gen(n[2], conf, n.kind),# 
             exp, mut, n[0].sym.name.s
           )
         )
-        #result = newSet(woSetGlobal, n[0].sym.getLoc, w.gen(n[2], conf, nkAsgn))
+        result = newSet(woSetGlobal, n[0].sym.getLoc, w.gen(n[2], conf, nkAsgn))
       inc b.nextGlobalIdx
       echo "#nextglobalidx ", b.nextGlobalIdx
       echo "#globals", b.m.globals.len
@@ -1085,6 +880,28 @@ proc gen(w: WasmGen, n: PNode, conf: ConfigRef, parentKind: TNodeKind=nkNone): W
     echo "#GTL loading from sym ", n.sym.name.s
     #echo conf.symToYaml(n.sym)
     result = conf.symLoc(n)
+  of nkCurly:
+    #echo conf.treeToYaml(n)
+    echo conf.typeToYaml(n[0].typ)
+    #conf.internalError("nkCurly not implemented")
+    result = newConst(b.stackptr)
+    for son in n:
+      if son.kind in nkLiterals:  
+        let bytes = conf.wasmConstToBytes(w.gen(son, conf, n.kind), conf.getSize(n.typ.lastSon))
+        b.m.data.add(
+          newData(
+            b.stackptr, 
+            bytes, "setelemnt"
+          )
+        )
+        b.moveStackPtrBy(bytes.len)
+      else:
+        # it's some pointer indirection, store it and move by 4bytes
+        # TODO:should make copies of non shallow types
+        b.nimInitBody.add(newStore(
+            memStoreI32, w.gen(son, conf, n.kind), 0, newConst(b.stackptr)
+        ))
+        b.moveStackPtrBy(4) #size of a pointer TODO: read it from conf?
   of nkBlockStmt:
     #echo conf.treeToYaml(n)
     # TODO: is the outer block any use?
@@ -1240,7 +1057,8 @@ proc gen(w: WasmGen, n: PNode, conf: ConfigRef, parentKind: TNodeKind=nkNone): W
         else:
           # it's some pointer indirection, store it and move by 4bytes
           # TODO:should make copies of non shallow types
-          result = newStore(
+          # TODO: in result or in nimInitBody?
+          result.sons.add newStore(
               memStoreI32, w.gen(son, conf, n.kind), 0, newConst(b.stackptr)
           )
           b.moveStackPtrBy(4) #size of a pointer TODO: read it from conf?
@@ -1383,14 +1201,15 @@ proc myProcess(b: PPassContext, n: PNode): PNode =
   result = n
   if passes.skipCodegen(w.config, n): return
   var backend = Backend(w.graph.backend)
-  if backend.m.name notin toFilename(w.config, n.info): return # FIXME: this skippes everything not coming from test.nim
+  if backend.m.name notin toFilename(w.config, n.info): return # FIXME: this skippes everything not coming from mainmodule
   var transfN = transformStmt(w.graph,w.s,n)
   if transfN.kind in nkGenSkippedKinds: return
 
-  echo "#WASM#>P ", $n.kind, " from ", w.config.toFilename(n.info.fileIndex)  
-
+  echo "#WASM#>P ", $n.kind, " transfKind: ", transfN.kind, " from ", w.config.toFilename(n.info.fileIndex)  
+  if transfN.kind == nkBlockStmt: transfN = transfN[1] # FIXME: a proper fix instead of skipping the outer block
+  #echo renderTree(transfN)
   for son in transfN:
-    # we dont call gen on transfN directly to avoid the whole module being processed at once, which fould screw up
+    # we dont call gen on transfN directly to avoid the whole module being processed at once, which would screw up
     # with order of execution of load/stores when they are inserted by us, eg in callMagic
     let tmp = w.gen(son, w.config)
     
@@ -1399,10 +1218,6 @@ proc myProcess(b: PPassContext, n: PNode): PNode =
       backend.nimInitBody.add(tmp)
       #echo son.kind
       #echo tmp.render
-  #if w.s.flags.contains(sfMainModule):
-  #  echo w.config.treeToYaml(n)
-  #  let generated = w.gen(n)
-  #  if not generated.isNil: w.nimInitBody.add(generated)
   
   echo "#WASM#<P ", $n.kind
 
@@ -1441,11 +1256,15 @@ proc myClose(graph: ModuleGraph; b: PPassContext, n: PNode): PNode =
 proc myOpen(graph: ModuleGraph; s: PSym): PPassContext =
   echo "#WASM#>O ",graph.config.toFilename(s.info.fileIndex)," s.name: ",$s.name.s
   
-  var w = newWasmGen(s, graph)
+  var w = WasmGen(s: s, graph:graph, config: graph.config)
+
   w.s = s
-  w.graph.backend = backend
+  # this is to persist the backend between modules, 
+  # otherwise it would get reinited at every myOpen of a new module
+  if w.graph.backend.isNil:
+    w.graph.backend = newBackend("main") # main is a placeholder, will get updated later
   if s.flags.contains(sfMainModule):
-    backend.updateBackendName(s.name.s)
+    Backend(w.graph.backend).updateBackendName(s.name.s)
   result = w
   echo "#WASM#<O ",graph.config.toFilename(s.info.fileIndex)," s.name: ",$s.name.s
 
