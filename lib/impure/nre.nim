@@ -367,19 +367,21 @@ func contains*(pattern: CaptureBounds, name: string): bool =
 func contains*(pattern: Captures, name: string): bool =
   name in CaptureBounds(pattern)
 
-func checkNamedCaptured(pattern: RegexMatch, name: string): void =
+func checkNamedCaptured(pattern: RegexMatch, name: string) =
   if not (name in pattern.captureBounds):
     raise newException(KeyError, "Group '" & name & "' was not captured")
 
 func `[]`*(pattern: CaptureBounds, name: string): HSlice[int, int] =
   let pattern = RegexMatch(pattern)
   checkNamedCaptured(pattern, name)
-  pattern.captureBounds[pattern.pattern.captureNameToId[name]]
+  {.noSideEffect.}:
+    result = pattern.captureBounds[pattern.pattern.captureNameToId[name]]
 
 func `[]`*(pattern: Captures, name: string): string =
   let pattern = RegexMatch(pattern)
   checkNamedCaptured(pattern, name)
-  return pattern.captures[pattern.pattern.captureNameToId[name]]
+  {.noSideEffect.}:
+    result = pattern.captures[pattern.pattern.captureNameToId[name]]
 
 template toTableImpl() {.dirty.} =
   for key in RegexMatch(pattern).pattern.captureNameId.keys:
