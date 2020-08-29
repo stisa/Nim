@@ -19,7 +19,7 @@ type
     #sigConflicts: CountTable[SigHash]
   
   Backend = ref object of RootRef
-    nimInitBody: seq[WasmNode] # sequence of operations that make up the top-level of the program
+    nimInit: WAsmFunction # a sequence of operations that make up the top-level of the program
     nextImportIdx: Natural # function index space ( doesn't account for hoisting of imported procs )
     nextFuncIdx: Natural # the function index space (only for non-imported funcs)
     nextGlobalIdx: Natural # the global index space
@@ -52,12 +52,18 @@ proc newBackend(modulename:string): Backend =
   # 4 byte aligned, reserve 8 bytes to store the stack pointer
   # This mean effective address start at 12?
   result.nextMemIdx = 0
-  result.nimInitBody = newSeq[WasmNode]()
+  result.nimInit = newFunction(
+      result.nextFuncIdx, newType(rs=vtNone), newOpList(), @[], "nimInit", true
+  )
+  inc result.nextFuncIdx
   # this will be updated since the first module name is not the main one
   result.m = newModule(modulename) 
   #initialize the module's sections
   result.m.memory = newMemory()
   add result.m.exports, newExport(0, ekMemory, "$memory")
+
+  result.m.functions.add(result.nimInit)
+
   result.locs = (12'i32, 0'i32)
 
 proc updateBackendName(b: Backend, name:string) = b.m.name = name
@@ -90,6 +96,7 @@ proc symLoc(conf: ConfigRef, n: PNode): WasmNode =
     elif n.sym.loc.storage == OnHeap:
       result = newLoad(conf.mapLoadKind(n.sym.typ), 0, 1, newConst(n.sym.loc.pos))
     else:
+      echo conf.symToYaml(n.sym)
       conf.internalError "#symloc: TODO: other than global"
   else:
     conf.internalError "#NOT A SYM for Symloc"
@@ -106,7 +113,7 @@ const nkGenSkippedKinds = { nkCommentStmt, nkPragma, nkEmpty,
 
 const nkSectionKinds = {nkVarSection, nkConstSection, nkLetSection}
 
-proc gen(w: WasmGen, n: PNode, conf: ConfigRef, parentKind: TNodeKind=nkNone): WasmNode
+proc gen(w: WasmGen, n: PNode, wasmproc: var WAsmFunction, parentKind: TNodeKind=nkNone): WasmNode
 
 proc exportOrUsed(s: PSym): bool =
   ( s.flags.contains(sfExported) and 
@@ -184,7 +191,7 @@ const BinaryMagic = {mAddI,mAddU,mSubI,mSubU,mMulI,mMulU,mDivI,mDivU,mSucc,mPred
   mBitandI, mBitorI, mBitxorI}
 const FloatsMagic = {mEqF64, mLeF64, mLtF64, mAddF64, mSubF64, mMulF64, mDivF64}
 
-proc callMagic(w:WasmGen, n: PNode, magic:TMagic): WasmNode =
+proc callMagic(w: WasmGen, n:PNode, magic:TMagic, wasmProc: var WAsmFunction, parentKind: TNodeKind=nkNone): WasmNode =
   echo "#MAGIC: ", magic
   let b = w.graph.backend.Backend
   case magic:
@@ -233,7 +240,7 @@ proc callMagic(w:WasmGen, n: PNode, magic:TMagic): WasmNode =
 
     for son in n[1]:
       if son.kind in nkLiterals:  
-        let bytes = w.config.wasmConstToBytes(w.gen(son, w.config, n.kind), w.config.getSize(n[1].typ.lastSon))
+        let bytes = w.config.wasmConstToBytes(w.gen(son, wasmProc, n.kind), w.config.getSize(n[1].typ.lastSon))
         b.m.data.add(
           newData(
             b.stackptr, 
@@ -247,29 +254,29 @@ proc callMagic(w:WasmGen, n: PNode, magic:TMagic): WasmNode =
         # FIXME: the store happens too soon. How can I sync it with the program?
         if son.typ == nil:
           w.config.internalError("Nil type for son in arrtoseq")
-        b.nimInitBody.add(
+        wasmProc.body.sons.add(
           newStore(
-            w.config.mapStoreKind(son.typ), w.gen(son, w.config, n.kind), 0, newConst(b.stackptr)
+            w.config.mapStoreKind(son.typ), w.gen(son, wasmProc, n.kind), 0, newConst(b.stackptr)
           )
         )
         b.moveStackPtrBy(son.typ.size) #size of a pointer TODO: read it from conf?
   of UnaryMagic:
-    result = newUnaryOp(w.config.getMagicOp(magic), w.gen(n[1], w.config))
+    result = newUnaryOp(w.config.getMagicOp(magic), w.gen(n[1], wasmProc))
   of BinaryMagic:
-    result = newBinaryOp(w.config.getMagicOp(magic), w.gen(n[1], w.config), w.gen(n[2], w.config))
+    result = newBinaryOp(w.config.getMagicOp(magic), w.gen(n[1], wasmProc), w.gen(n[2], wasmProc))
   of FloatsMagic:
     if n.typ.kind == tyFloat32: #CHECK: why did I have this comment?
       # or (n.typ.kind == tyBool and n[1].typ.kind == tyFloat32): 
       # the bool part is because otherwise 1'f32+2.0 would use f32 arithm
-      result = newBinaryOp(w.config.getFloat32Magic(magic), w.gen(n[1], w.config), w.gen(n[2], w.config))
+      result = newBinaryOp(w.config.getFloat32Magic(magic), w.gen(n[1], wasmProc), w.gen(n[2], wasmProc))
     else:
-      result = newBinaryOp(w.config.getMagicOp(magic), w.gen(n[1], w.config), w.gen(n[2], w.config))
+      result = newBinaryOp(w.config.getMagicOp(magic), w.gen(n[1], wasmProc), w.gen(n[2], wasmProc))
   of mInc:
     echo w.config.treeToYaml(n)
     let s = if n[1].kind == nkSym: n[1].sym else: n[1][0].sym
     result =  newStore(
       w.config.mapStoreKind(s.typ),
-      newBinaryOp(ibAdd32, w.gen(n[1], w.config), w.gen(n[2], w.config)),
+      newBinaryOp(ibAdd32, w.gen(n[1], wasmProc), w.gen(n[2], wasmProc)),
       0,
       newConst(s.getLoc), # TODO: proper fix
     )
@@ -277,7 +284,7 @@ proc callMagic(w:WasmGen, n: PNode, magic:TMagic): WasmNode =
     let s = if n[1].kind == nkSym: n[1].sym else: n[1][0].sym
     result =  newStore(
       w.config.mapStoreKind(s.typ),
-      newBinaryOp(ibSub32, w.gen(n[1], w.config), w.gen(n[2], w.config)),
+      newBinaryOp(ibSub32, w.gen(n[1], wasmProc), w.gen(n[2], wasmProc)),
       0,
       newConst(s.getLoc), # TODO: proper fix
     )
@@ -506,11 +513,10 @@ proc genProc(w: WasmGen, n: PNode, conf: ConfigRef) =
   # Build the type signature of this proc in wasm land
   # note that for type sign purposes, the prc.sym.typ.sons are better than using formalparams of ast
   let procparams = n.sym.typ.sons # the list of types for params
-
-    # body = s.getBody() TODO:
-  
   var proctype : WasmType #= newType(rs=res) # The complete type of the proc in wasm land
     
+    # body = s.getBody() TODO:
+
   for i, par in procparams:
     if i == 0:
       proctype = newType(rs=conf.mapType(par)) # instantiate the proc type with the result type
@@ -539,26 +545,40 @@ proc genProc(w: WasmGen, n: PNode, conf: ConfigRef) =
     b.generatedProcs[n.sym] = (b.nextImportIdx, true)
     inc b.nextImportIdx
   else:
-    echo "#GNP: nim proc aren't really generated yet, proc: ", n.sym.name.s, " module: ", conf.toFilename(n.info.fileIndex)
-    # TODO:
-    var wasmProcBody: WasmNode
+
+    echo "#GNP: generating nim proc: ", n.sym.name.s, " module: ", conf.toFilename(n.info.fileIndex)
+    var wasmproc =  newFunction(
+        b.nextFuncIdx, proctype,
+        newOpList(), @[], procDef[namePos].sym.name.s, 
+        procDef[namePos].sym.flags.contains(sfExported)
+      )
+    inc b.nextFuncIdx
+    
+    if proctype.res != vtNone: 
+      wasmproc.locals.add proctype.res
+    
     var transfBody = transformBody(w.graph, procDef[namePos].sym, cache=false)
     echo "#working on transfbody:"#, conf.treeToYaml(transfBody)
     echo renderTree(transfBody)
-    wasmProcBody = w.gen(transfBody, conf)
-    var lc = if proctype.res != vtNone: @[proctype.res] else: @[]
-    b.m.functions.add(
-      newFunction(
-        b.nextFuncIdx, proctype,
-        wasmProcBody, lc#[params?]#, procDef[namePos].sym.name.s, 
-        procDef[namePos].sym.flags.contains(sfExported)
-      )
-    )
     
-    b.generatedProcs[n.sym] = (b.nextFuncIdx, false)
-    inc b.nextFuncIdx
+    if transfBody.kind == nkStmtList:
+      for son in transfBody:
+        # we dont call gen on transfBody directly to avoid the whole proc being processed at once, which would screw
+        # with order of execution of load/stores when they are inserted by us, eg in callMagic
+        let tmp = w.gen(son, wasmproc, transfBody.kind)
+        # reduces useless empty opLists
+        if not tmp.isNil and not(tmp.kind == opList and tmp.sons.len == 0): 
+          wasmproc.body.sons.add(tmp)
+    else:
+      let tmp = w.gen(transfBody, wasmproc, transfBody.kind)
+      # reduces useless empty opLists
+      if not tmp.isNil and not(tmp.kind == opList and tmp.sons.len == 0): 
+        wasmproc.body.sons.add(tmp)
+          
+    b.m.functions.add(wasmproc)
     
-    #echo conf.treeToYaml(transfBody) 
+    b.generatedProcs[n.sym] = (wasmproc.id, false)
+    
 
 proc genLit(w: WasmGen, n: PNode, conf: ConfigRef, parentKind: TNodeKind): WasmNode =
   # General idea: if it's a numeral(int, float, bool...) use const and pass
@@ -595,10 +615,11 @@ proc genLit(w: WasmGen, n: PNode, conf: ConfigRef, parentKind: TNodeKind): WasmN
   else:
     conf.internalError "#GNL TODO other literals"
 
-proc genAsgn(w: WasmGen, lhs, rhs: PNode, conf: ConfigRef,): WasmNode =
+proc genAsgn(w: WasmGen, lhs, rhs: PNode, wasmproc: var WAsmFunction): WasmNode =
   #TODO:,
   #echo conf.treeToYaml(lhs)
   #echo conf.treeToYaml(rhs)
+  let conf = w.config
   var ns = lhs.skipHidden()
   
   if ns.kind != nkSym: 
@@ -607,29 +628,29 @@ proc genAsgn(w: WasmGen, lhs, rhs: PNode, conf: ConfigRef,): WasmNode =
   if ns.sym.owner.kind == skModule: # globals
     if ns.sym.typ.kind == tyVar:
       # need to treat it as a pointer
-      result = newStore(conf.mapStoreKind(ns.sym.typ.skipTypes({tyVar})),w.gen(rhs, conf, nkAsgn), 0, conf.symLoc(ns))
+      result = newStore(conf.mapStoreKind(ns.sym.typ.skipTypes({tyVar})),w.gen(rhs, wasmproc, nkAsgn), 0, conf.symLoc(ns))
     else:
-      result = newStore(conf.mapStoreKind(ns.sym.typ), w.gen(rhs, conf, nkAsgn), 0, newConst(ns.sym.getLoc))
+      result = newStore(conf.mapStoreKind(ns.sym.typ), w.gen(rhs, wasmproc, nkAsgn), 0, newConst(ns.sym.getLoc))
   elif ns.sym.owner.kind == skProc: # locals
     if ns.sym.typ.kind == tyVar:
       # need to treat it as a pointer
-      result = newStore(conf.mapStoreKind(ns.sym.typ.skipTypes({tyVar})),w.gen(rhs, conf, nkAsgn), 0, conf.symLoc(ns))
+      result = newStore(conf.mapStoreKind(ns.sym.typ.skipTypes({tyVar})),w.gen(rhs, wasmproc, nkAsgn), 0, conf.symLoc(ns))
     elif ns.sym.kind == skResult:
-      result = w.gen(rhs, conf, nkAsgn)
+      result = w.gen(rhs, wasmproc, nkAsgn)
     else:
-      result = newStore(conf.mapStoreKind(ns.sym.typ), w.gen(rhs, conf, nkAsgn), 0, newConst(ns.sym.getLoc))
+      result = newStore(conf.mapStoreKind(ns.sym.typ), w.gen(rhs, wasmproc, nkAsgn), 0, newConst(ns.sym.getLoc))
       #result = newSet(woSetLocal, ns.sym.getLoc, w.gen(rhs, conf, nkAsgn))
   else:
     conf.internalError("# asgn: owner.kind not proc or module " & $ns.sym.owner.kind)
 
 
-proc genCall(w: WasmGen, n: PNode, conf: ConfigRef, parentKind: TNodeKind=nkNone): WasmNode =
+proc genCall(w: WasmGen, n: PNode, wasmproc: var WAsmFunction, parentKind: TNodeKind=nkNone): WasmNode =
   # 0-> proc sym, 1..->arg(s)
   echo "#GCL call kind ", n.kind
   let b = Backend(w.graph.backend)
-
+  let conf = w.config
   if n.sons[0].sym.magic != mNone:
-    return callMagic(w, n, n.sons[0].sym.magic)
+    return callMagic(w, n, n.sons[0].sym.magic, wasmproc, parentKind)
     
 
   # TODO: inlined procs??
@@ -661,7 +682,7 @@ proc genCall(w: WasmGen, n: PNode, conf: ConfigRef, parentKind: TNodeKind=nkNone
       echo "#ARGtyp: ", arg.typ.kind
       #echo conf.typeToYaml(arg.typ)
       if arg.typ.kind == tyVar and not arg.typ[0].kind.isPtrLike : toUpdate.add(arg.skipHidden)
-      args.add(w.gen(arg, conf, n.kind))
+      args.add(w.gen(arg, wasmproc, n.kind))
   result=newCall(id, args, isImport)
   #[
   if toUpdate.len == 0:
@@ -685,7 +706,7 @@ proc genCall(w: WasmGen, n: PNode, conf: ConfigRef, parentKind: TNodeKind=nkNone
       else: 
         echo "# NOT MODIFYING A STRAIGHT VAR"
   ]#
-proc genVar(w: WasmGen, n: PNode, conf: ConfigRef, parentKind: TNodeKind=nkNone): WasmNode =
+proc genVar(w: WasmGen, n: PNode, wasmproc: var WAsmFunction, parentKind: TNodeKind=nkNone): WasmNode =
   # sons: 0->symbol, 1->type, 2->val
     # usually, sym.typ is more reliable than n.sons[1] for type
     # this should be handed to a store proc?
@@ -694,6 +715,7 @@ proc genVar(w: WasmGen, n: PNode, conf: ConfigRef, parentKind: TNodeKind=nkNone)
     #       hopefully they will still have sfUsed?
     let s = n.sons[0].sym
     let b = Backend(w.graph.backend)
+    let conf = w.config
 
     if s.exportOrUsed:
       
@@ -723,36 +745,38 @@ proc genVar(w: WasmGen, n: PNode, conf: ConfigRef, parentKind: TNodeKind=nkNone)
         else:
           echo "#GTL RHS nkSym kind :" & $n.sons[2].sym.kind
           # move stackptr size typ, update it after
-          result = w.genAsgn(n[0], n[2], conf)
+          result = w.genAsgn(n[0], n[2], wasmproc)
       else:
         echo "#GTL non literal RHS ", n.sons[2].kind, " for ", s.name.s
         # move stackptr size typ, update it after
-        result = w.genAsgn(n[0], n[2], conf)
+        result = w.genAsgn(n[0], n[2], wasmproc)
       b.moveStackPtrBy(s.typ.size)
 
-proc gen(w: WasmGen, n: PNode, conf: ConfigRef, parentKind: TNodeKind=nkNone): WasmNode =
+proc gen(w: WasmGen, n:PNode, wasmproc: var WAsmFunction, parentKind: TNodeKind=nkNone): WasmNode =
   # TODO: go through https://nim-lang.org/docs/macros.html#statements for inspirationn
+
   result = newOpList() # try to fix crashes due to nil
   if n.kind in nkGenSkippedKinds: return
   echo "# working on: ", n.kind
   if not (n.kind == nkStmtList):
     echo renderTree(n)
+  let conf = w.config
   let b = Backend(w.graph.backend)
   echo "#GTL: ", $n.kind, " parent: ", parentKind, " module: ", conf.toFilename(n.info.fileIndex)
   case n.kind:
   of nkGenSkippedKinds: discard
   of nkCallKinds: 
     # TODO: prepare args on stack
-    result = w.genCall(n, conf, parentKind)
+    result = w.genCall(n, wasmproc, parentKind)
   of nkLetSection, nkConstSection:
     # sons: identdefs
     for son in n.sons:
-      result.sons.add(w.gen(son, conf, n.kind))
+      result.sons.add(w.gen(son, wasmproc, n.kind))
     #echo conf.treeToYaml(n)
   of nkVarSection:
     # special treatment since it needs to go in linear memory
     for son in n.sons:
-      result.sons.add(w.genVar(son, conf, n.kind))
+      result.sons.add(w.genVar(son, wasmproc, n.kind))
   of nkConv, nkHiddenStdConv:
     echo "# " & $n.kind
     #echo conf.treeToYaml(n)
@@ -788,9 +812,9 @@ proc gen(w: WasmGen, n: PNode, conf: ConfigRef, parentKind: TNodeKind=nkNone): W
       else: w.config.internalError("#nkHiddenStdConv4")
     else: w.config.internalError("#nkHiddenStdConv5")
     if convOP == woNop:
-      result = w.gen(n[1], conf) 
+      result = w.gen(n[1], wasmproc) 
     else:
-      result = newUnaryOp(convOP, w.gen(n[1], conf))
+      result = newUnaryOp(convOP, w.gen(n[1], wasmproc))
     # echo w.config.treeToYaml(n)
     # result = # FIXME: does this work for every symbol?
     #   newStore(
@@ -860,7 +884,7 @@ proc gen(w: WasmGen, n: PNode, conf: ConfigRef, parentKind: TNodeKind=nkNone): W
               exp, mut, n[0].sym.name.s
             )
           )
-          result = newSet(woSetGlobal, n[0].sym.getLoc, w.gen(n[2], conf, nkAsgn))
+          result = newSet(woSetGlobal, n[0].sym.getLoc, w.gen(n[2], wasmproc, nkAsgn))
           
       else:
         echo "#GTL non literal RHS ", n.sons[2].kind, " for ", s.name.s
@@ -871,7 +895,7 @@ proc gen(w: WasmGen, n: PNode, conf: ConfigRef, parentKind: TNodeKind=nkNone): W
             exp, mut, n[0].sym.name.s
           )
         )
-        result = newSet(woSetGlobal, n[0].sym.getLoc, w.gen(n[2], conf, nkAsgn))
+        result = newSet(woSetGlobal, n[0].sym.getLoc, w.gen(n[2], wasmproc, nkAsgn))
       inc b.nextGlobalIdx
       echo "#nextglobalidx ", b.nextGlobalIdx
       echo "#globals", b.m.globals.len
@@ -887,7 +911,7 @@ proc gen(w: WasmGen, n: PNode, conf: ConfigRef, parentKind: TNodeKind=nkNone): W
     result = newConst(b.stackptr)
     for son in n:
       if son.kind in nkLiterals:  
-        let bytes = conf.wasmConstToBytes(w.gen(son, conf, n.kind), conf.getSize(n.typ.lastSon))
+        let bytes = conf.wasmConstToBytes(w.gen(son, wasmproc, n.kind), conf.getSize(n.typ.lastSon))
         b.m.data.add(
           newData(
             b.stackptr, 
@@ -898,35 +922,35 @@ proc gen(w: WasmGen, n: PNode, conf: ConfigRef, parentKind: TNodeKind=nkNone): W
       else:
         # it's some pointer indirection, store it and move by 4bytes
         # TODO:should make copies of non shallow types
-        b.nimInitBody.add(newStore(
-            memStoreI32, w.gen(son, conf, n.kind), 0, newConst(b.stackptr)
+        wasmproc.body.sons.add(newStore(
+            memStoreI32, w.gen(son, wasmproc, n.kind), 0, newConst(b.stackptr)
         ))
         b.moveStackPtrBy(4) #size of a pointer TODO: read it from conf?
   of nkBlockStmt:
     #echo conf.treeToYaml(n)
     # TODO: is the outer block any use?
     # n[0]: blockname, n[1] the body
-    result = w.gen(n[1], conf, n.kind)
+    result = w.gen(n[1], wasmproc, n.kind)
   of nkWhileStmt:
     # echo conf.treeToYaml(n)
     result = newWhileLoop(
-      w.gen(n[0], conf, n.kind), # condition
-      w.gen(n[1], conf, n.kind)  # body
+      w.gen(n[0], wasmproc, n.kind), # condition
+      w.gen(n[1], wasmproc, n.kind)  # body
     )
   of nkLiterals: #TODO: other literals
     result = w.genLit(n, conf, parentKind)
   of nkStmtList, nkStmtListExpr:
     result = newOpList()
     for son in n.sons:
-      let tmp = w.gen(son, conf, n.kind)
+      let tmp = w.gen(son, wasmproc, n.kind)
       if not tmp.isNil and not(tmp.kind == opList and tmp.sons.len == 0): 
         # since some nkKinds are skipped, we produce nil nodes. 
         #TODO: fix that instead of using this workaround
         result.sons.add(tmp)
   of nkAsgn, nkFastAsgn:
-    result = w.genAsgn(n[0], n[1], conf)
+    result = w.genAsgn(n[0], n[1], wasmproc)
   of nkReturnStmt:
-    result = newReturn(w.gen(n.sons[0],conf))
+    result = newReturn(w.gen(n.sons[0],wasmproc))
   of nkHiddenAddr: # TODO: nkAddr
     # to generate:
     # get global
@@ -1005,7 +1029,7 @@ proc gen(w: WasmGen, n: PNode, conf: ConfigRef, parentKind: TNodeKind=nkNone): W
         result.sons.add(
           [newStore(
             memStoreI32, 
-            w.gen(son, conf),
+            w.gen(son, wasmproc),
             0,
             newLoad(memLoadI32, 0, 1, newConst(4'i32))
           ),
@@ -1046,7 +1070,7 @@ proc gen(w: WasmGen, n: PNode, conf: ConfigRef, parentKind: TNodeKind=nkNone): W
 
       for son in n:
         if son.kind in nkLiterals:  
-          let bytes = conf.wasmConstToBytes(w.gen(son, conf, n.kind), conf.getSize(n.typ.lastSon))
+          let bytes = conf.wasmConstToBytes(w.gen(son, wasmproc, n.kind), conf.getSize(n.typ.lastSon))
           b.m.data.add(
             newData(
               b.stackptr, 
@@ -1059,11 +1083,11 @@ proc gen(w: WasmGen, n: PNode, conf: ConfigRef, parentKind: TNodeKind=nkNone): W
           # TODO:should make copies of non shallow types
           # TODO: in result or in nimInitBody?
           result.sons.add newStore(
-              memStoreI32, w.gen(son, conf, n.kind), 0, newConst(b.stackptr)
+              memStoreI32, w.gen(son, wasmproc, n.kind), 0, newConst(b.stackptr)
           )
           b.moveStackPtrBy(4) #size of a pointer TODO: read it from conf?
   of nkExprColonExpr:
-    result = w.gen(n[1], conf, n.kind)
+    result = w.gen(n[1], wasmproc, n.kind)
   of nkObjConstr:
       echo "# An object constructor"
       #echo renderTree(n)
@@ -1076,7 +1100,7 @@ proc gen(w: WasmGen, n: PNode, conf: ConfigRef, parentKind: TNodeKind=nkNone): W
         if son[1].isNil or son[1].kind == nkEmpty: 
           conf.internalError("FIXME: empty object field")
         if son[1].kind in nkLiterals:
-          let bytes = conf.wasmConstToBytes(w.gen(son, conf, n.kind), son[1].typ.size)
+          let bytes = conf.wasmConstToBytes(w.gen(son, wasmproc, n.kind), son[1].typ.size)
           b.m.data.add(
             newData(
               b.stackptr, 
@@ -1088,7 +1112,7 @@ proc gen(w: WasmGen, n: PNode, conf: ConfigRef, parentKind: TNodeKind=nkNone): W
           # it's some pointer indirection, store it and move by 4bytes
           # TODO:should make copies of non shallow types
           result = newStore(
-              memStoreI32, w.gen(son, conf, n.kind), 0, newConst(b.stackptr)
+              memStoreI32, w.gen(son, wasmproc, n.kind), 0, newConst(b.stackptr)
           )
           
           b.moveStackPtrBy(4) #size of a pointer TODO: read it from conf?
@@ -1101,7 +1125,7 @@ proc gen(w: WasmGen, n: PNode, conf: ConfigRef, parentKind: TNodeKind=nkNone): W
       result = newConst(b.stackptr)
       for i, son in n:
         if son.kind in nkLiterals:
-          let bytes = conf.wasmConstToBytes(w.gen(son, conf, n.kind), son.typ.size)
+          let bytes = conf.wasmConstToBytes(w.gen(son, wasmproc, n.kind), son.typ.size)
           b.m.data.add(
             newData(
               b.stackptr, 
@@ -1113,7 +1137,7 @@ proc gen(w: WasmGen, n: PNode, conf: ConfigRef, parentKind: TNodeKind=nkNone): W
           # it's some pointer indirection, store it and move by 4bytes
           # TODO:should make copies of non shallow types
           result = newStore(
-              memStoreI32, w.gen(son, conf, n.kind), 0, newConst(b.stackptr)
+              memStoreI32, w.gen(son, wasmproc, n.kind), 0, newConst(b.stackptr)
           )
           
           b.moveStackPtrBy(4) #size of a pointer TODO: read it from conf?
@@ -1122,7 +1146,7 @@ proc gen(w: WasmGen, n: PNode, conf: ConfigRef, parentKind: TNodeKind=nkNone): W
     result = newLoad(
       conf.mapLoadKind(n[1].sym.typ), 0, 1,
       newAdd32(
-        w.gen(n[0], conf, n.kind), # base object loc
+        w.gen(n[0], wasmproc, n.kind), # base object loc
         newConst(n[1].sym.offset) # field offset
       )
     )
@@ -1135,10 +1159,10 @@ proc gen(w: WasmGen, n: PNode, conf: ConfigRef, parentKind: TNodeKind=nkNone): W
       conf.mapLoadKind(n[0].sym.typ.lastSon), 0, 1,
       # symloc + basepos + pos*sizetype
       newAdd32(
-        w.gen(n[0], conf, n.kind), # base array/strin/seq loc
+        w.gen(n[0], wasmproc, n.kind), # base array/strin/seq loc
         newAdd32(
           newMul32(
-            w.gen(n[1], conf, n.kind),
+            w.gen(n[1], wasmproc, n.kind),
             newConst(n[0].typ.lastSon.size.toInt128.toInt32)
           ), # element offset
           newConst(baseoffset)
@@ -1156,27 +1180,24 @@ proc gen(w: WasmGen, n: PNode, conf: ConfigRef, parentKind: TNodeKind=nkNone): W
       #result2 = gen if1 else result1
       #result3 = gen if2 else result2
       if n[bidx].kind == nkElse:
-        result = w.gen(n[bidx][0], conf, n.kind)
+        result = w.gen(n[bidx][0], wasmproc, n.kind)
       else:
-        result = newIfElse(w.gen(n[bidx][0], conf, n.kind), w.gen(n[bidx][1], conf, n.kind), result)
+        result = newIfElse(w.gen(n[bidx][0], wasmproc, n.kind), w.gen(n[bidx][1], wasmproc, n.kind), result)
   else:
     echo "# Missing kind ", n.kind
     echo renderTree(n)
     echo conf.treeToYaml(n)
     conf.internalError("#GTL is missing kind: " & $n.kind)
 
-proc genNimInit(b: Backend) =
-  # Generate the init expression
-  if b.nimInitBody.len<1: 
+proc updateNimInit(b: Backend) =
+  # Update the init expression
+  if b.nimInit.body.sons.len<1: 
     echo "# Empty nimInitBody"
-  # FALSE: return # no expression, no need for a init proc
-  b.m.functions.add(
-    newFunction(
-      b.nextFuncIdx, newType(vtNone),  newOpList(b.nimInitBody), @[], "nimInit", true
-    )
-  )
-  echo "#generated initfunc at index init: ", b.nextFuncIdx
-  inc b.nextFuncIdx
+  #b.m.functions.add(b.nimInit)
+  b.m.functions[0].typ = b.nimInit.typ
+  b.m.functions[0].body = b.nimInit.body
+  b.m.functions[0].locals = b.nimInit.locals
+  echo "#updated nimInit at index init: ", b.nimInit.id
 
 proc wasmMoveStackPtr(by:int32): WasmNode =
   newStore( memStoreI32, newAdd32(newLoad(memLoadI32,0,1,newConst(4'i32)), newConst(by)),
@@ -1206,19 +1227,23 @@ proc myProcess(b: PPassContext, n: PNode): PNode =
   if transfN.kind in nkGenSkippedKinds: return
 
   echo "#WASM#>P ", $n.kind, " transfKind: ", transfN.kind, " from ", w.config.toFilename(n.info.fileIndex)  
-  if transfN.kind == nkBlockStmt: transfN = transfN[1] # FIXME: a proper fix instead of skipping the outer block
   #echo renderTree(transfN)
-  for son in transfN:
-    # we dont call gen on transfN directly to avoid the whole module being processed at once, which would screw up
-    # with order of execution of load/stores when they are inserted by us, eg in callMagic
-    let tmp = w.gen(son, w.config)
-    
+  
+  if transfN.kind == nkStmtList: 
+    for son in transfN:
+      # we dont call gen on transfN directly to avoid the whole module being processed at once, which would screw up
+      # with order of execution of load/stores when they are inserted by us, eg in callMagic
+      let tmp = w.gen(son, backend.nimInit, transfN.kind)
+      
+      # reduces useless empty opLists
+      if not tmp.isNil and not(tmp.kind == opList and tmp.sons.len == 0): 
+        backend.nimInit.body.sons.add(tmp)
+  else:
+    let tmp = w.gen(transfN, backend.nimInit, transfN.kind)
     # reduces useless empty opLists
     if not tmp.isNil and not(tmp.kind == opList and tmp.sons.len == 0): 
-      backend.nimInitBody.add(tmp)
-      #echo son.kind
-      #echo tmp.render
-  
+      backend.nimInit.body.sons.add(tmp)
+    
   echo "#WASM#<P ", $n.kind
 
 
@@ -1230,7 +1255,7 @@ proc myClose(graph: ModuleGraph; b: PPassContext, n: PNode): PNode =
   if w.s.flags.contains(sfMainModule):
     # finalize the module
     var backend = Backend(graph.backend)
-    backend.genNimInit()
+    backend.updateNimInit()
     backend.putHeapPtr()
     #echo "#BackendNAME: ", Backend(graph.backend).m.name
     let outfile = w.config.prepareToWriteOutput
