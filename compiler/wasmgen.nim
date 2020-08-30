@@ -82,7 +82,7 @@ proc updateLoc(s: PSym, loc: int, kind: TLocKind, skind: TStorageLoc) =
 proc getLoc(s: PSym): int =
   result = s.loc.pos  
   if s.loc.k != locGlobalVar:
-    echo "#getloc: TODO: other than global"
+    echo "#getloc: CHECK: other than global"
 
 proc hash(s:PSym): Hash = hash(s.mangleName)
 
@@ -91,6 +91,8 @@ proc symLoc(conf: ConfigRef, n: PNode): WasmNode =
   if n.kind == nkSym:
     if n.sym.kind == skParam:
         result = newGet(woGetLocal, n.sym.position)
+    elif n.sym.loc.k == locLocalVar:
+        result = newGet(woGetLocal, n.sym.loc.pos)
     elif n.sym.loc.storage == OnStatic:
       result = newGet(woGetGlobal, n.sym.loc.pos)
     elif n.sym.loc.storage == OnHeap:
@@ -516,7 +518,6 @@ proc genProc(w: WasmGen, n: PNode, conf: ConfigRef) =
   var proctype : WasmType #= newType(rs=res) # The complete type of the proc in wasm land
     
     # body = s.getBody() TODO:
-
   for i, par in procparams:
     if i == 0:
       proctype = newType(rs=conf.mapType(par)) # instantiate the proc type with the result type
@@ -545,8 +546,9 @@ proc genProc(w: WasmGen, n: PNode, conf: ConfigRef) =
     b.generatedProcs[n.sym] = (b.nextImportIdx, true)
     inc b.nextImportIdx
   else:
-
     echo "#GNP: generating nim proc: ", n.sym.name.s, " module: ", conf.toFilename(n.info.fileIndex)
+    #echo conf.treeToYaml(procDef)
+    #echo renderTree(procDef)
     var wasmproc =  newFunction(
         b.nextFuncIdx, proctype,
         newOpList(), @[], procDef[namePos].sym.name.s, 
@@ -554,11 +556,15 @@ proc genProc(w: WasmGen, n: PNode, conf: ConfigRef) =
       )
     inc b.nextFuncIdx
     
-    if proctype.res != vtNone: 
-      wasmproc.locals.add proctype.res
-    
+    # update the loc of result symbol if present
+    # would'nt be needed if result was injected, see notes on compiler
+    # improvement
+    if proctype.res != vtNone:
+      procDef[resultPos].sym.updateLoc(wasmproc.typ.params.len+wasmproc.locals.len, locLocalVar, OnHeap)
+      wasmproc.locals.add(wasmproc.typ.res)
+  
     var transfBody = transformBody(w.graph, procDef[namePos].sym, cache=false)
-    echo "#working on transfbody:"#, conf.treeToYaml(transfBody)
+    echo "#working on transfbody:", conf.treeToYaml(transfBody)
     echo renderTree(transfBody)
     
     if transfBody.kind == nkStmtList:
@@ -574,6 +580,14 @@ proc genProc(w: WasmGen, n: PNode, conf: ConfigRef) =
       # reduces useless empty opLists
       if not tmp.isNil and not(tmp.kind == opList and tmp.sons.len == 0): 
         wasmproc.body.sons.add(tmp)
+    
+    # inject a return stmt
+    # would'nt be needed if result was injected, see notes on compiler
+    # improvement
+    if proctype.res != vtNone:
+      wasmproc.body.sons.add(
+        newReturn(w.gen(procDef[resultPos], wasmproc, transfBody.kind))
+      )
           
     b.m.functions.add(wasmproc)
     
@@ -617,13 +631,15 @@ proc genLit(w: WasmGen, n: PNode, conf: ConfigRef, parentKind: TNodeKind): WasmN
 
 proc genAsgn(w: WasmGen, lhs, rhs: PNode, wasmproc: var WAsmFunction): WasmNode =
   #TODO:,
-  #echo conf.treeToYaml(lhs)
+  #
   #echo conf.treeToYaml(rhs)
   let conf = w.config
   var ns = lhs.skipHidden()
-  
+  #echo conf.treeToYaml(lhs)
   if ns.kind != nkSym: 
     conf.internalError("# asgn not to a sym but " & $ns.kind)
+  #if ns.sym.kind == skResult:
+  #    echo conf.symToYaml(ns.sym)
   # TODO: use loc.k to know how to store
   if ns.sym.owner.kind == skModule: # globals
     if ns.sym.typ.kind == tyVar:
@@ -635,8 +651,8 @@ proc genAsgn(w: WasmGen, lhs, rhs: PNode, wasmproc: var WAsmFunction): WasmNode 
     if ns.sym.typ.kind == tyVar:
       # need to treat it as a pointer
       result = newStore(conf.mapStoreKind(ns.sym.typ.skipTypes({tyVar})),w.gen(rhs, wasmproc, nkAsgn), 0, conf.symLoc(ns))
-    elif ns.sym.kind == skResult:
-      result = w.gen(rhs, wasmproc, nkAsgn)
+    elif ns.sym.loc.k == locLocalVar:
+      result = newSet(woSetLocal, ns.sym.getLoc, w.gen(rhs, wasmproc, nkAsgn))
     else:
       result = newStore(conf.mapStoreKind(ns.sym.typ), w.gen(rhs, wasmproc, nkAsgn), 0, newConst(ns.sym.getLoc))
       #result = newSet(woSetLocal, ns.sym.getLoc, w.gen(rhs, conf, nkAsgn))
@@ -725,7 +741,11 @@ proc genVar(w: WasmGen, n: PNode, wasmproc: var WAsmFunction, parentKind: TNodeK
       if not mut: conf.internalError("let/const went through the wrong codegen path")
       let lockind = if s.owner.kind == skModule: locGlobalVar
                     else: locLocalVar
-      s.updateLoc(b.stackptr, lockind, OnHeap) # OnHeap => on the linear memory
+      if lockind == locGlobalVar:
+        s.updateLoc(b.stackptr, lockind, OnHeap) # OnHeap => on the linear memory
+      else:
+        s.updateLoc(wasmproc.typ.params.len+wasmproc.locals.len, lockind, OnHeap)
+        wasmproc.locals.add(conf.mapType(s.typ))
       # TODO: differntiate between OnHeap(refs)/OnStack(rest)
       
       # if sons[2](aka val) is nkEmpty, we can skip the generation by just moving 
@@ -950,6 +970,8 @@ proc gen(w: WasmGen, n:PNode, wasmproc: var WAsmFunction, parentKind: TNodeKind=
   of nkAsgn, nkFastAsgn:
     result = w.genAsgn(n[0], n[1], wasmproc)
   of nkReturnStmt:
+    #if n.sons[0].sym.kind == skResult:
+    #  echo conf.symToYaml(n.sons[0].sym)
     result = newReturn(w.gen(n.sons[0],wasmproc))
   of nkHiddenAddr: # TODO: nkAddr
     # to generate:
