@@ -80,6 +80,8 @@ proc newFunction*(idx: Natural, typ: WasmType, code: WasmNode,
   WAsmFunction(idx: idx, hoistedIndex: -1, name: name,
     typ: typ, body: code, locals: lc, exported:exported)
 proc id*(f: WAsmFunction): Natural = f.idx
+proc `idx=`*(f: var WAsmFunction, id: Natural) = 
+  f.idx = id
 
 proc newMemory*(pages: Natural = 1): WAsmMemory = 
   WAsmMemory(idx: 1, pages: pages)

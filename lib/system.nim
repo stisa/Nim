@@ -3048,3 +3048,6 @@ else:
 
 when not defined(createNimHcr) and not defined(nimscript):
   include nimhcr
+
+when defined wasm:
+  proc nimRaise(msg: string) {.compilerproc, header:"glue", importc:"raise".}

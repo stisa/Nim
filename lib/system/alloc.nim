@@ -20,7 +20,7 @@ template track(op, address, size) =
 # Each chunk starts at an address that is divisible by the page size.
 
 const
-  nimMinHeapPages {.intdefine.} = 128 # 0.5 MB
+  nimMinHeapPages {.intdefine.} = when defined wasm: 1 else: 128 # 0.5 MB
   SmallChunkSize = PageSize
   MaxFli = 30
   MaxLog2Sli = 5 # 32, this cannot be increased without changing 'uint32'
@@ -436,7 +436,11 @@ proc requestOsChunks(a: var MemRegion, size: int): PBigChunk =
         if usedMem > nimMaxHeap * 1024 * 1024:
           raiseOutOfMem()
       if usedMem < 64 * 1024:
-        a.nextChunkSize = PageSize*4
+        when defined wasm:
+          a.nextchunksize = PageSize
+        else:
+          a.nextChunkSize = PageSize*4
+        
       else:
         a.nextChunkSize = min(roundup(usedMem shr 2, PageSize), a.nextChunkSize * 2)
         a.nextChunkSize = min(a.nextChunkSize, MaxBigChunkSize)

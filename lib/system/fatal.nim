@@ -24,7 +24,7 @@ when hostOS == "standalone":
     rawoutput(message)
     panic(arg)
 
-elif (defined(nimQuirky) or defined(nimPanics)) and not defined(nimscript):
+elif (defined(nimQuirky) or defined(nimPanics)) and not defined(nimscript) and not defined wasm:
   import ansi_c
 
   proc name(t: typedesc): string {.magic: "TypeTrait".}
@@ -43,7 +43,6 @@ elif (defined(nimQuirky) or defined(nimPanics)) and not defined(nimscript):
 
   proc sysFatal(exceptn: typedesc, message: string) {.inline, noreturn.} =
     sysFatal(exceptn, message, "")
-
 else:
   proc sysFatal(exceptn: typedesc, message: string) {.inline, noreturn.} =
     raise (ref exceptn)(msg: message)
