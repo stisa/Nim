@@ -451,6 +451,8 @@ proc encode*(m: WAsmModule): seq[byte] =
   for g in m.globals:
     if g.exported: m.exports.add(newExport(g.index, ekGlobal, g.name))
   
+  # let start = m.functions[0].hoistedIndex.int32.unsignedLEB128
+
   let (exportNum, exports) = encode(m.exports)
   let (memNum, memory) = encode(m.memory)
   let (dataNum, data) = encode(m.data)
@@ -497,12 +499,16 @@ proc encode*(m: WAsmModule): seq[byte] =
   
   # 7 ExportSection
   result.add(7'i32.unsignedLEB128) # Export section
-  result.add((1+exports.len).int32.unsignedLEB128)  # length of import section in bytes
-                                                    # +1 because the num of imports
-  result.add(exportNum.int32.unsignedLEB128) # num of import
-  result.add(exports) # imports data
+  result.add((1+exports.len).int32.unsignedLEB128)  # length of export section in bytes
+                                                    # +1 because the num of exports
+  result.add(exportNum.int32.unsignedLEB128) # num of export
+  result.add(exports) # exports data
 
   # 8 StartSection
+  # Start doesn't allow to call out to js so it's not suitable to be the `main`
+  #result.add(8'i32.unsignedLEB128) # Start section
+  #result.add(start.len.int32.unsignedLEB128)  # length of start section in bytes
+  #result.add(start) # start function index as bytes
 
   # 9 ElementSection
 
