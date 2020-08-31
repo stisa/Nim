@@ -129,6 +129,9 @@ proc mapLoadKind*(c: ConfigRef, tt:PType): WasmOpKind =
 proc isPtrLike*(t:TTypeKind): bool =
   t in {tyObject, tyArray, tyVar, tyPtr, tyString, tySequence}
 
+proc hasResult*(prc:PSym): bool = 
+  #assert(prc.kind == skProc skFunc)
+  prc.ast.len > 6
 
 proc alignTo4*(n:Natural): Natural = (n + 3) and not(0x03)
   # Next multiple of 4 or return n if n is already a multiple of 4
