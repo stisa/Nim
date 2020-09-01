@@ -92,7 +92,7 @@ proc backendAddr(w: WasmGen, s: PSym): int =
       result = s.position
   else:
       result = s.loc.pos
-  if s.loc.k == locNone or s.loc.storage == OnUnknown:
+  if not(s.kind == skParam) and (s.loc.k == locNone or s.loc.storage == OnUnknown):
     echo w.config.symToYaml(s)
     w.config.internalError "#bAddr" & $s.name.s & " " & $s.loc.k & " " & $s.loc.storage
 
@@ -670,10 +670,30 @@ proc genAsgn(w: WasmGen, lhs, rhs: PNode, wasmproc: var WAsmFunction): WasmNode 
   #echo conf.treeToYaml(lhs)
   if ns.kind != nkSym: 
     conf.internalError("# asgn not to a sym but " & $ns.kind)
-  #if ns.sym.kind == skResult:
-  #    echo conf.symToYaml(ns.sym)
-  # FIXME: use loc.k, loc.storage to know how to store
-  if ns.sym.owner.kind == skModule: # globals
+  let loc = ns.sym.loc
+  if ns.sym.kind == skParam:
+    if not (ns.sym.typ.kind == tyVar):
+      w.config.internalError("# Assigning to a non-var param?")
+    result = newStore(conf.mapStoreKind(ns.sym.typ.skipTypes({tyVar})),w.gen(rhs, wasmproc, nkAsgn), 0, w.backendDerefNode(ns.sym))
+  elif loc.k == locLocalVar:
+    result = newSet(
+      woSetLocal, w.backendAddr(ns.sym),
+      w.gen(rhs, wasmproc, nkAsgn)
+    )
+  elif loc.k == locGlobalVar:
+    if loc.storage == OnHeap:
+      result = newStore(conf.mapStoreKind(ns.sym.typ), w.gen(rhs, wasmproc, nkAsgn), 0, newConst(w.backendAddr(ns.sym)))
+    elif loc.storage == OnStatic:
+      # This should only trigger when updating a let with the runtime value
+      result = newSet(woSetGlobal, w.backendAddr(ns.sym), w.gen(rhs, wasmproc, nkAsgn))
+    else:
+      echo w.config.treeToYaml(ns)
+      w.config.internalError("#genAsgn: unrecognized storage " & $loc.storage)
+  else:
+    echo w.config.treeToYaml(ns)
+    w.config.internalError("#genAsgn: unrecognized kind " & $loc.k)
+
+  #[if ns.sym.owner.kind == skModule: # globals
     if ns.sym.typ.kind == tyVar:
       # need to treat it as a pointer
       result = newStore(conf.mapStoreKind(ns.sym.typ.skipTypes({tyVar})),w.gen(rhs, wasmproc, nkAsgn), 0, w.backendDerefNode(ns.sym))
@@ -689,7 +709,7 @@ proc genAsgn(w: WasmGen, lhs, rhs: PNode, wasmproc: var WAsmFunction): WasmNode 
       result = newStore(conf.mapStoreKind(ns.sym.typ), w.gen(rhs, wasmproc, nkAsgn), 0, newConst(w.backendAddr(ns.sym)))
       #result = newSet(woSetLocal, ns.sym.getLoc, w.gen(rhs, conf, nkAsgn))
   else:
-    conf.internalError("# asgn: owner.kind not proc or module " & $ns.sym.owner.kind)
+    conf.internalError("# asgn: owner.kind not proc or module " & $ns.sym.owner.kind)]#
 
 
 proc genCall(w: WasmGen, n: PNode, wasmproc: var WAsmFunction, 
