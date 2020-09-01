@@ -69,7 +69,9 @@ proc newBackend(modulename:string): Backend =
 proc updateBackendName(b: Backend, name:string) = b.m.name = name
 
 proc moveStackPtrBy(b:Backend, bytes:BiggestInt) =
+  echo "# old: ", b.locs.stack, " new: ", b.locs.stack+bytes.int32
   b.locs.stack += bytes.int32
+   
 
 proc stackptr(b:Backend): int = b.locs.stack
 
@@ -674,6 +676,7 @@ proc genAsgn(w: WasmGen, lhs, rhs: PNode, wasmproc: var WAsmFunction): WasmNode 
   if ns.sym.kind == skParam:
     if not (ns.sym.typ.kind == tyVar):
       w.config.internalError("# Assigning to a non-var param?")
+    echo "store1"
     result = newStore(conf.mapStoreKind(ns.sym.typ.skipTypes({tyVar})),w.gen(rhs, wasmproc, nkAsgn), 0, w.backendDerefNode(ns.sym))
   elif loc.k == locLocalVar:
     result = newSet(
@@ -682,6 +685,7 @@ proc genAsgn(w: WasmGen, lhs, rhs: PNode, wasmproc: var WAsmFunction): WasmNode 
     )
   elif loc.k == locGlobalVar:
     if loc.storage == OnHeap:
+      echo "store2"
       result = newStore(conf.mapStoreKind(ns.sym.typ), w.gen(rhs, wasmproc, nkAsgn), 0, newConst(w.backendAddr(ns.sym)))
     elif loc.storage == OnStatic:
       # This should only trigger when updating a let with the runtime value
@@ -923,7 +927,9 @@ proc genVar(w: WasmGen, n: PNode, wasmproc: var WAsmFunction,
     elif n.sons[2].kind in nkLiterals-nkStrKinds:
       # for numericals, just store in the global
       if lockind == locGlobalVar:
-        result = newStore(conf.mapStoreKind(s.typ), w.genLit(n.sons[2], n.kind), 0, newConst(b.stackptr))  
+        echo "store3"
+        result = newStore(conf.mapStoreKind(s.typ), w.genLit(n.sons[2], n.kind), 0, newConst(w.backendAddr(s)))  
+        b.moveStackPtrBy(s.typ.size)
       else:
         result = newSet(woSetLocal, w.backendAddr(s), w.genLit(n.sons[2], n.kind))  
     elif n.sons[2].kind == nkSym:
@@ -933,18 +939,22 @@ proc genVar(w: WasmGen, n: PNode, wasmproc: var WAsmFunction,
         # for skEnumField, sym.position is the ordinal value of the enum.
         # TODO: enum with holes?
         if lockind == locGlobalVar:
-          result = newStore(conf.mapStoreKind(s.typ), newConst(n.sons[2].sym.position.int32), 0, newConst(b.stackptr))  
+          echo "store4"
+          result = newStore(conf.mapStoreKind(s.typ), newConst(n.sons[2].sym.position.int32), 0, newConst(w.backendAddr(s)))  
+          b.moveStackPtrBy(s.typ.size)          
         else:
           result = newSet(woSetLocal, w.backendAddr(s), newConst(n.sons[2].sym.position.int32))
       else:
         echo "#GTL RHS nkSym kind :" & $n.sons[2].sym.kind
         # move stackptr size typ, update it after
-        result = w.genAsgn(n[0], n[2], wasmproc)
+        result = w.gen(n[2], wasmproc, n.kind)
     else:
       echo "#GTL non literal RHS ", n.sons[2].kind, " for ", s.name.s
       # move stackptr size typ, update it after
-      result = w.genAsgn(n[0], n[2], wasmproc)
-    b.moveStackPtrBy(s.typ.size)
+      result = w.gen(n[2], wasmproc, n.kind)
+    
+    #if lockind == locGlobalVar: b.moveStackPtrBy(s.typ.size)
+    
 
 
 proc genIdentDef(w: WasmGen, n:PNode, wasmproc: var WAsmFunction, 
@@ -998,6 +1008,7 @@ proc genCurly(w: WasmGen, n:PNode, wasmproc: var WAsmFunction,
     else:
       # it's some pointer indirection, store it and move by 4bytes
       # TODO:should make copies of non shallow types
+      echo "store5"
       wasmproc.body.sons.add(newStore(
           memStoreI32, w.gen(son, wasmproc, n.kind), 0, newConst(b.stackptr)
       ))
@@ -1076,8 +1087,8 @@ proc genBracket(w: WasmGen, n:PNode, wasmproc: var WAsmFunction,
 proc genObjConstr(w: WasmGen, n:PNode, wasmproc: var WAsmFunction, 
   parentKind: TNodeKind=nkNone): WasmNode =
   #echo "# An object constructor"
-  #echo renderTree(n)
-  #echo conf.treeToYaml(n)
+  echo renderTree(n)
+  echo w.config.treeToYaml(n)
   let conf = w.config
   let b = w.graph.backend.Backend
   if n.typ.kind notin {tyObject, tyRef}:
@@ -1092,7 +1103,7 @@ proc genObjConstr(w: WasmGen, n:PNode, wasmproc: var WAsmFunction,
       # FIXME: OMG ugly
       debugname = n[0][0][0].sym.name.s
 
-  result = newConst(b.stackptr)
+  #result = newConst(b.stackptr)# REMOVEME: FIXME:
   for i, son in n:
     if i==0: continue # skip the typedef
     if son[1].isNil or son[1].kind == nkEmpty: 
@@ -1109,6 +1120,7 @@ proc genObjConstr(w: WasmGen, n:PNode, wasmproc: var WAsmFunction,
     else:
       # it's some pointer indirection, store it and move by 4bytes
       # TODO:should make copies of non shallow types
+      echo "#nkobjconstr store"
       wasmproc.body.sons.add(newStore(
           memStoreI32, w.gen(son, wasmproc, n.kind), 0, newConst(b.stackptr)
       ))
@@ -1139,6 +1151,7 @@ proc genTupleConstr(w: WasmGen, n:PNode, wasmproc: var WAsmFunction,
     else:
       # it's some pointer indirection, store it and move by 4bytes
       # TODO:should make copies of non shallow types
+      echo "store6"
       wasmproc.body.sons.add(newStore(
           memStoreI32, w.gen(son, wasmproc, n.kind), 0, newConst(b.stackptr)
       ))
@@ -1148,14 +1161,14 @@ proc genTupleConstr(w: WasmGen, n:PNode, wasmproc: var WAsmFunction,
 proc genDotExpr(w: WasmGen, n:PNode, wasmproc: var WAsmFunction, 
   parentKind: TNodeKind=nkNone): WasmNode =
   let conf = w.config
-  echo conf.treeToYaml(n[0])
+  #echo conf.treeToYaml(n[0])
   echo "offs ", n[1].sym.name.s, " ", n[1].sym.offset, " ", n[1].sym.position
-  echo conf.treeToYaml(n[1])
+  #echo conf.treeToYaml(n[1])
   if n[0].kind == nkSym:
     result = newLoad(
       conf.mapLoadKind(n[1].sym.typ), 0, 1,
       newAdd32(
-        w.gen(n[0], wasmproc, n.kind), # base object loc
+        newConst(w.backendAddr(n[0].sym)), # base object loc
         newConst(n[1].sym.offset) # field offset
       )
     )

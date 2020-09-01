@@ -97,8 +97,8 @@ proc mapType*(c: ConfigRef, tt:PType):WasmValueType =
   of tyBool, tyChar, tyInt8, tyUInt8:
     result = vtI8
   #TODO:
-  #of tyInt16, tyUInt16:
-  #  result = vtI16
+  of tyInt16, tyUInt16:
+    result = vtI16
   of tyInt, tyInt32, tyUInt, tyUInt32,
     tyString, tyPtr, tyRef, tyPointer, tyVar, tyObject, tyTuple, tySet,
     tySequence, tyArray, tyProc:
@@ -113,6 +113,7 @@ proc mapType*(c: ConfigRef, tt:PType):WasmValueType =
 proc mapStoreKind*(c: ConfigRef, tt:PType): WasmOpKind =
   case c.mapType(tt):
   of vtI8: result = memStore8_I32
+  of vtI16: result = memStore16_I32
   of vtI32: result = memStoreI32
   of vtI64: 
     echo "# WASM not sure about i64S"
@@ -125,6 +126,7 @@ proc mapStoreKind*(c: ConfigRef, tt:PType): WasmOpKind =
 proc mapLoadKind*(c: ConfigRef, tt:PType): WasmOpKind =
   case c.mapType(tt):
   of vtI8: result = memLoad8U_I32 # CHECK: U or S
+  of vtI16: result = memLoad16S_I32
   of vtI32: result = memLoadI32
   of vtI64: 
     echo "# WASM not sure about i64L"
