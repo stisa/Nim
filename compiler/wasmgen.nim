@@ -591,7 +591,7 @@ proc genProc(w: WasmGen, prc: PSym, conf: ConfigRef) =
       wasmproc.locals.add(wasmproc.typ.res)
   
     var transfBody = transformBody(w.graph, prc, cache=false)
-    echo "#working on transfbody:", conf.treeToYaml(transfBody)
+    echo "#working on transfbody:"#, conf.treeToYaml(transfBody)
     echo renderTree(transfBody)
     
     if transfBody.kind == nkStmtList:

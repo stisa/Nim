@@ -83,21 +83,25 @@ const
 
 const allTypes = {tyNone..tyVoid}
 proc mapType*(c: ConfigRef, tt:PType):WasmValueType =
-  #echo "#maptyp",c.typeToYaml(tt)
   if tt.isNil: return vtNone
+  #echo "#maptyp", tt.kind #,c.typeToYaml(tt)
   if tt.kind == tyVarargs: return vtI32
   
   let t = if not tt.isNil: tt.skipTypes(allTypes-ConcreteTypes) else: tt
+  #echo "#maptyp2", t.kind ,c.typeToYaml(tt)
   if t.isNil: return vtNone
   case t.kind:
-  #of tyBool,tyInt,tyInt32,tyUInt32,tyUInt,tyUInt8,tyInt16,
-  #  tyString, tyPointer, tySequence, tyArray, tyProc,
-  #  tyOrdinal, tyVar, tyOpenArray, tyObject, tyChar:
-  of tyBool,tyChar:
+  of tyEnum:
     result = vtI8
-  of tyInt..tyInt32, tyUInt..tyUInt32,
+    if t.size > 1: c.internalError("# mapType: enum size > 1 byte: " & $t.size)
+  of tyBool, tyChar, tyInt8, tyUInt8:
+    result = vtI8
+  #TODO:
+  #of tyInt16, tyUInt16:
+  #  result = vtI16
+  of tyInt, tyInt32, tyUInt, tyUInt32,
     tyString, tyPtr, tyRef, tyPointer, tyVar, tyObject, tyTuple, tySet,
-    tySequence, tyEnum, tyArray, tyProc:
+    tySequence, tyArray, tyProc:
     result = vtI32
   of tyFloat32:
     result = vtF32
@@ -110,7 +114,9 @@ proc mapStoreKind*(c: ConfigRef, tt:PType): WasmOpKind =
   case c.mapType(tt):
   of vtI8: result = memStore8_I32
   of vtI32: result = memStoreI32
-  of vtI64: result = memStoreI32 # no 64 bit in wasm
+  of vtI64: 
+    echo "# WASM not sure about i64S"
+    result = memStoreI64 # no 64 bit in wasm
   of vtF32: result = memStoreF32
   of vtF64: result = memStoreF64
   else:
@@ -120,7 +126,9 @@ proc mapLoadKind*(c: ConfigRef, tt:PType): WasmOpKind =
   case c.mapType(tt):
   of vtI8: result = memLoad8U_I32 # CHECK: U or S
   of vtI32: result = memLoadI32
-  of vtI64: result = memLoadI32
+  of vtI64: 
+    echo "# WASM not sure about i64L"
+    result = memLoadI64
   of vtF32: result = memLoadF32
   of vtF64: result = memLoadF64
   else:
