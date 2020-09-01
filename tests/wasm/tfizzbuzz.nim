@@ -16,3 +16,5 @@ for i in 1..100:
     log "Fizz"
   else:
     log i
+
+# TODO: copy output and set it as output of spec

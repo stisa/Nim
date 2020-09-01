@@ -5,7 +5,7 @@ discard """
   timeout:  60.0
 """
 
-proc log(x:bool) {.header:"glue", importc:"log".}
+proc log(x:bool) {.header:"glue", importc:"echoBool".}
 var 
   i = 30
   t = i<=10

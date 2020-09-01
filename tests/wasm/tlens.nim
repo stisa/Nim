@@ -5,7 +5,6 @@ discard """
   timeout:  60.0
 """
 
-proc check[T](x:T) {.header:"glue", importc:"assert".}
 var c = newSeq[int](3)
 c[1] = 123
 c[2] = 456
@@ -18,7 +17,7 @@ var e = [1,2,3]
 
 var f = "hell"
 
-check len(c) == 3
-check len(d) == 4
-check len(e) == 3
-check len(f) == 4
+doAssert len(c) == 3
+doAssert len(d) == 4
+doAssert len(e) == 3
+doAssert len(f) == 4

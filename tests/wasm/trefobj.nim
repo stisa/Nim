@@ -5,21 +5,20 @@ discard """
   timeout:  60.0
 """
 
-proc check[T](x:T) {.header:"glue", importc:"assert".}
-
 type A = ref object
   id: int
   f: float32
+  #s: string
 
 var 
   b : A
   c : A
 new b
-check(b.id==0)
+doAssert(b.id==0)
 b.id = 13
-check(b.id == 13)
+doAssert(b.id == 13)
 new c
 c = b
 c.f = 3.14'f32
-check(c.id == 13)
-check(c.f == 3.14'f32)
+doAssert(c.id == 13)
+doAssert(c.f == 3.14'f32)

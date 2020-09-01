@@ -5,7 +5,6 @@ discard """
   exitcode: 0
 """
 
-proc check[T](x:T) {.header:"glue", importc:"assert".}
 
 type
   Enum1 = enum
@@ -15,4 +14,4 @@ type
 var
   e1 = Field1
   e2 = Enum1(Place2)
-check(e1 == e2)
+doAssert(e1 == e2)
