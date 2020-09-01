@@ -86,7 +86,32 @@ proc getLoc(s: PSym): int =
 
 proc hash(s:PSym): Hash = hash(s.mangleName)
 
+proc backendAddr(w: WasmGen, s: PSym): int = 
+  # TODO: study var params
+  if s.kind == skParam:
+      result = s.position
+  else:
+      result = s.loc.pos
+  if s.loc.k == locNone or s.loc.storage == OnUnknown:
+    echo w.config.symToYaml(s)
+    w.config.internalError "#bAddr" & $s.name.s & " " & $s.loc.k & " " & $s.loc.storage
+
+proc backendDerefNode(w: WasmGen, s: PSym): WasmNode =
+  # TODO: study var params
+  if s.kind == skParam:
+      result = newGet(woGetLocal, s.position)
+  elif s.loc.k == locLocalVar:
+      result = newGet(woGetLocal, s.loc.pos)
+  elif s.loc.storage == OnStatic:
+    result = newGet(woGetGlobal, s.loc.pos)
+  elif s.loc.storage == OnHeap:
+    result = newLoad(w.config.mapLoadKind(s.typ), 0, 1, newConst(s.loc.pos))
+  else:
+    echo w.config.symToYaml(s)
+    w.config.internalError "#bDeref" & $s.name.s & " " & $s.loc.k & " " & $s.loc.storage
+
 proc symLoc(conf: ConfigRef, n: PNode): WasmNode =
+  # TODO: splitme backendDeref , backendAddr
   # TODO: study var params
   if n.kind == nkSym:
     if n.sym.kind == skParam:
@@ -647,21 +672,21 @@ proc genAsgn(w: WasmGen, lhs, rhs: PNode, wasmproc: var WAsmFunction): WasmNode 
     conf.internalError("# asgn not to a sym but " & $ns.kind)
   #if ns.sym.kind == skResult:
   #    echo conf.symToYaml(ns.sym)
-  # TODO: use loc.k to know how to store
+  # FIXME: use loc.k, loc.storage to know how to store
   if ns.sym.owner.kind == skModule: # globals
     if ns.sym.typ.kind == tyVar:
       # need to treat it as a pointer
-      result = newStore(conf.mapStoreKind(ns.sym.typ.skipTypes({tyVar})),w.gen(rhs, wasmproc, nkAsgn), 0, conf.symLoc(ns))
+      result = newStore(conf.mapStoreKind(ns.sym.typ.skipTypes({tyVar})),w.gen(rhs, wasmproc, nkAsgn), 0, w.backendDerefNode(ns.sym))
     else:
-      result = newStore(conf.mapStoreKind(ns.sym.typ), w.gen(rhs, wasmproc, nkAsgn), 0, newConst(ns.sym.getLoc))
+      result = newStore(conf.mapStoreKind(ns.sym.typ), w.gen(rhs, wasmproc, nkAsgn), 0, newConst(w.backendAddr(ns.sym)))
   elif ns.sym.owner.kind == skProc: # locals
     if ns.sym.typ.kind == tyVar:
       # need to treat it as a pointer
-      result = newStore(conf.mapStoreKind(ns.sym.typ.skipTypes({tyVar})),w.gen(rhs, wasmproc, nkAsgn), 0, conf.symLoc(ns))
+      result = newStore(conf.mapStoreKind(ns.sym.typ.skipTypes({tyVar})),w.gen(rhs, wasmproc, nkAsgn), 0, w.backendDerefNode(ns.sym))
     elif ns.sym.loc.k == locLocalVar:
-      result = newSet(woSetLocal, ns.sym.getLoc, w.gen(rhs, wasmproc, nkAsgn))
+      result = newSet(woSetLocal, w.backendAddr(ns.sym), w.gen(rhs, wasmproc, nkAsgn))
     else:
-      result = newStore(conf.mapStoreKind(ns.sym.typ), w.gen(rhs, wasmproc, nkAsgn), 0, newConst(ns.sym.getLoc))
+      result = newStore(conf.mapStoreKind(ns.sym.typ), w.gen(rhs, wasmproc, nkAsgn), 0, newConst(w.backendAddr(ns.sym)))
       #result = newSet(woSetLocal, ns.sym.getLoc, w.gen(rhs, conf, nkAsgn))
   else:
     conf.internalError("# asgn: owner.kind not proc or module " & $ns.sym.owner.kind)
@@ -727,56 +752,6 @@ proc genCall(w: WasmGen, n: PNode, wasmproc: var WAsmFunction,
       else: 
         echo "# NOT MODIFYING A STRAIGHT VAR"
   ]#
-proc genVar(w: WasmGen, n: PNode, wasmproc: var WAsmFunction, 
-  parentKind: TNodeKind=nkNone): WasmNode =
-  # sons: 0->symbol, 1->type, 2->val
-    # usually, sym.typ is more reliable than n.sons[1] for type
-    # this should be handed to a store proc?
-    # note that if symbol doesnt have sfUsed+sfMainModule or sfExported, we should be allowed to skip codegen
-    # TODO: this will start to fail once we deal with procs, as they are the owners of the inner syms.
-    #       hopefully they will still have sfUsed?
-    let s = n.sons[0].sym
-    let b = Backend(w.graph.backend)
-    let conf = w.config
-
-    if s.exportOrUsed:
-      
-      let 
-        mut = parentKind == nkVarSection
-        exp = s.owner.flags.contains(sfMainModule) and s.flags.contains(sfExported)
-      if not mut: conf.internalError("let/const went through the wrong codegen path")
-      let lockind = if s.owner.kind == skModule: locGlobalVar
-                    else: locLocalVar
-      if lockind == locGlobalVar:
-        s.updateLoc(b.stackptr, lockind, OnHeap) # OnHeap => on the linear memory
-      else:
-        s.updateLoc(wasmproc.typ.params.len+wasmproc.locals.len, lockind, OnHeap)
-        wasmproc.locals.add(conf.mapType(s.typ))
-      # TODO: differntiate between OnHeap(refs)/OnStack(rest)
-      
-      # if sons[2](aka val) is nkEmpty, we can skip the generation by just moving 
-      # the stack pointer by size(type), otherwise we actually have to perform the store
-      if n.sons[2].kind in {nkEmpty, nkNilLit} :
-        echo "#GTL elided store due to empty val ", s.name.s
-      elif n.sons[2].kind in nkLiterals-nkStrKinds:
-        # for numericals, just store in the global
-        result = newStore(conf.mapStoreKind(s.typ), w.genLit(n.sons[2], n.kind), 0, newConst(b.stackptr))  
-      elif n.sons[2].kind == nkSym:
-        echo "#GTL RHS is nkSym for ", s.name.s
-        #echo conf.symToYaml(n.sons[2].sym)
-        if n.sons[2].sym.kind == skEnumField:
-          # for skEnumField, sym.position is the ordinal value of the enum.
-          # TODO: enum with holes?
-          result = newStore(conf.mapStoreKind(s.typ), newConst(n.sons[2].sym.position.int32), 0, newConst(b.stackptr))    
-        else:
-          echo "#GTL RHS nkSym kind :" & $n.sons[2].sym.kind
-          # move stackptr size typ, update it after
-          result = w.genAsgn(n[0], n[2], wasmproc)
-      else:
-        echo "#GTL non literal RHS ", n.sons[2].kind, " for ", s.name.s
-        # move stackptr size typ, update it after
-        result = w.genAsgn(n[0], n[2], wasmproc)
-      b.moveStackPtrBy(s.typ.size)
 
 proc genConv(w: WasmGen, n:PNode, wasmproc: var WAsmFunction, 
   parentKind: TNodeKind=nkNone): WasmNode =
@@ -818,6 +793,140 @@ proc genConv(w: WasmGen, n:PNode, wasmproc: var WAsmFunction,
   else:
     result = newUnaryOp(convOP, w.gen(n[1], wasmproc))
 
+proc genLocal(w: WasmGen, n:PNode, wasmproc: var WAsmFunction): WasmNode =
+  let s = n.sons[0].sym
+  
+  if n.sons[2].kind in {nkEmpty, nkNilLit} :
+    result = newSet(woSetLocal, w.backendAddr(s), newConst(0'i32))
+  elif n.sons[2].kind in nkLiterals-nkStrKinds:
+    # for numericals, just store in the local
+    result = newSet(woSetLocal, w.backendAddr(s),  w.genLit(n.sons[2], n.kind))
+  elif n.sons[2].kind == nkSym:
+    echo "#GL RHS is nkSym for ", s.name.s
+    #echo conf.symToYaml(n.sons[2].sym)
+    if n.sons[2].sym.kind == skEnumField:
+      # for skEnumField, sym.position is the ordinal value of the enum.
+      # TODO: enum with holes?
+      result = newSet(woSetLocal, w.backendAddr(s), newConst(n.sons[2].sym.position.int32))
+    else:
+      echo "#GL RHS nkSym kind :" & $n.sons[2].sym.kind
+      result = newSet(woSetLocal, w.backendAddr(s), w.gen(n[2], wasmproc, nkAsgn))
+  else:
+    echo "#GL non literal RHS ", n.sons[2].kind, " for ", s.name.s
+    result = newSet(woSetLocal, w.backendAddr(s), w.gen(n[2], wasmproc, nkAsgn))
+  
+proc genGlobal(w: WasmGen, n:PNode, wasmproc: var WAsmFunction, mut, exp: bool): WasmNode =
+  let conf = w.config
+  let b = w.graph.backend.Backend
+
+  let s = n.sons[0].sym
+  
+  if n.sons[2].kind in {nkEmpty, nkNilLit} :
+    b.m.globals.add(newGlobal(w.backendAddr(s), conf.mapType(s.typ), newConst(0'i32),exp, mut, n[0].sym.name.s))  
+  elif n.sons[2].kind in nkLiterals-nkStrKinds:
+    # for numericals, just store in the global
+    b.m.globals.add(newGlobal(w.backendAddr(s), conf.mapType(s.typ), w.genLit(n.sons[2], n.kind), exp, mut, n[0].sym.name.s))  
+  elif n.sons[2].kind == nkSym:
+    echo "#GTL RHS is nkSym for ", s.name.s
+    #echo conf.symToYaml(n.sons[2].sym)
+    if n.sons[2].sym.kind == skEnumField:
+      # for skEnumField, sym.position is the ordinal value of the enum.
+      # TODO: enum with holes?
+      b.m.globals.add(
+        newGlobal(
+          w.backendAddr(s), conf.mapType(s.typ), 
+          newConst(n.sons[2].sym.position.int32), 
+          exp, mut, n[0].sym.name.s
+        )
+      )  
+    else:
+      echo "#GTL RHS nkSym kind :" & $n.sons[2].sym.kind
+      # initialize the global and update it after
+      b.m.globals.add(
+        newGlobal(
+          w.backendAddr(s), conf.mapType(s.typ), 
+          newNop(), 
+          #w.gen(n[2], conf, n.kind),
+          exp, mut, n[0].sym.name.s
+        )
+      )
+      result = newSet(woSetGlobal, w.backendAddr(s), w.gen(n[2], wasmproc, nkAsgn))
+      
+  else:
+    echo "#GTL non literal RHS ", n.sons[2].kind, " for ", s.name.s
+    b.m.globals.add(
+      newGlobal(
+        w.backendAddr(s), conf.mapType(s.typ), 
+        w.gen(n[2], wasmproc, n.kind),
+        exp, mut, n[0].sym.name.s
+      )
+    )
+    #result = newSet(woSetGlobal, n[0].sym.getLoc, w.gen(n[2], wasmproc, nkAsgn))
+  inc b.nextGlobalIdx
+  #echo "#nextglobalidx ", b.nextGlobalIdx
+  #echo "#globals", b.m.globals.len
+
+proc genVar(w: WasmGen, n: PNode, wasmproc: var WAsmFunction, 
+  parentKind: TNodeKind=nkNone): WasmNode =
+  # sons: 0->symbol, 1->type, 2->val
+  # usually, sym.typ is more reliable than n.sons[1] for type
+  # this should be handed to a store proc?
+  # note that if symbol doesnt have sfUsed+sfMainModule or sfExported, we should be allowed to skip codegen
+  # TODO: this will start to fail once we deal with procs, as they are the owners of the inner syms.
+  #       hopefully they will still have sfUsed?
+  let s = n.sons[0].sym
+  let b = Backend(w.graph.backend)
+  let conf = w.config
+
+  if s.exportOrUsed:
+    
+    let 
+      mut = parentKind == nkVarSection
+      exp = s.owner.flags.contains(sfMainModule) and s.flags.contains(sfExported)
+    if not mut: conf.internalError("let/const went through the wrong codegen path")
+    let lockind = if s.owner.kind == skModule: locGlobalVar else: locLocalVar
+    
+    if lockind == locGlobalVar:
+      s.updateLoc(b.stackptr, lockind, OnHeap) # OnHeap => on the linear memory
+    else:
+      s.updateLoc(wasmproc.typ.params.len+wasmproc.locals.len, lockind, OnStatic)
+      wasmproc.locals.add(conf.mapType(s.typ))
+    
+    # TODO: differntiate between OnHeap(refs)/OnStack(rest)
+    
+    # if sons[2](aka val) is nkEmpty, we can skip the generation by just moving 
+    # the stack pointer by size(type), otherwise we actually have to perform the store
+    if n.sons[2].kind in {nkEmpty, nkNilLit} :
+      echo "#GTL elided store due to empty val ", s.name.s
+      if not (s.loc.k == locGlobalVar):
+        result = newSet(woSetLocal, w.backendAddr(s), newConst(0'u32))  
+    elif n.sons[2].kind in nkLiterals-nkStrKinds:
+      # for numericals, just store in the global
+      if lockind == locGlobalVar:
+        result = newStore(conf.mapStoreKind(s.typ), w.genLit(n.sons[2], n.kind), 0, newConst(b.stackptr))  
+      else:
+        result = newSet(woSetLocal, w.backendAddr(s), w.genLit(n.sons[2], n.kind))  
+    elif n.sons[2].kind == nkSym:
+      echo "#GTL RHS is nkSym for ", s.name.s
+      #echo conf.symToYaml(n.sons[2].sym)
+      if n.sons[2].sym.kind == skEnumField:
+        # for skEnumField, sym.position is the ordinal value of the enum.
+        # TODO: enum with holes?
+        if lockind == locGlobalVar:
+          result = newStore(conf.mapStoreKind(s.typ), newConst(n.sons[2].sym.position.int32), 0, newConst(b.stackptr))  
+        else:
+          result = newSet(woSetLocal, w.backendAddr(s), newConst(n.sons[2].sym.position.int32))
+      else:
+        echo "#GTL RHS nkSym kind :" & $n.sons[2].sym.kind
+        # move stackptr size typ, update it after
+        result = w.genAsgn(n[0], n[2], wasmproc)
+    else:
+      echo "#GTL non literal RHS ", n.sons[2].kind, " for ", s.name.s
+      # move stackptr size typ, update it after
+      result = w.genAsgn(n[0], n[2], wasmproc)
+    b.moveStackPtrBy(s.typ.size)
+
+
 proc genIdentDef(w: WasmGen, n:PNode, wasmproc: var WAsmFunction, 
   parentKind: TNodeKind=nkNone): WasmNode =
   # sons: 0->symbol, 1->type, 2->val
@@ -838,56 +947,15 @@ proc genIdentDef(w: WasmGen, n:PNode, wasmproc: var WAsmFunction,
       mut = parentKind == nkLetSection # let section may need to be updated at runtime
       exp = s.owner.flags.contains(sfMainModule) and s.flags.contains(sfExported)
     if parentKind == nkVarSection: conf.internalError("var identdef went through the wrong codegen path")
-    let lockind = locGlobalVar # TODO: if s.owner.kind == skModule: locGlobalVar
-                  #else: locLocalVar
-    s.updateLoc(b.nextGlobalIdx, lockind, OnStatic) # OnStatic means let/const are in a wasm global/local
+    let lockind = if s.owner.kind == skModule: locGlobalVar else: locLocalVar
     
-    
-    if n.sons[2].kind in {nkEmpty, nkNilLit} :
-      b.m.globals.add(newGlobal(b.nextGlobalIdx, conf.mapType(s.typ), newConst(0'i32),exp, mut, n[0].sym.name.s))  
-    elif n.sons[2].kind in nkLiterals-nkStrKinds:
-      # for numericals, just store in the global
-      b.m.globals.add(newGlobal(b.nextGlobalIdx, conf.mapType(s.typ), w.genLit(n.sons[2], n.kind), exp, mut, n[0].sym.name.s))  
-    
-    elif n.sons[2].kind == nkSym:
-      echo "#GTL RHS is nkSym for ", s.name.s
-      #echo conf.symToYaml(n.sons[2].sym)
-      if n.sons[2].sym.kind == skEnumField:
-        # for skEnumField, sym.position is the ordinal value of the enum.
-        # TODO: enum with holes?
-        b.m.globals.add(
-          newGlobal(
-            b.nextGlobalIdx, conf.mapType(s.typ), 
-            newConst(n.sons[2].sym.position.int32), 
-            exp, mut, n[0].sym.name.s
-          )
-        )  
-      else:
-        echo "#GTL RHS nkSym kind :" & $n.sons[2].sym.kind
-        # initialize the global and update it after
-        b.m.globals.add(
-          newGlobal(
-            b.nextGlobalIdx, conf.mapType(s.typ), 
-            newNop(), 
-            #w.gen(n[2], conf, n.kind),
-            exp, mut, n[0].sym.name.s
-          )
-        )
-        result = newSet(woSetGlobal, n[0].sym.getLoc, w.gen(n[2], wasmproc, nkAsgn))
-        
+    if lockind == locGlobalVar:
+        s.updateLoc(b.nextGlobalIdx, lockind, OnStatic) # OnStatic means let/const are in a wasm global/local
+        result = w.genGlobal(n, wasmproc, mut, exp)
     else:
-      echo "#GTL non literal RHS ", n.sons[2].kind, " for ", s.name.s
-      b.m.globals.add(
-        newGlobal(
-          b.nextGlobalIdx, conf.mapType(s.typ), 
-          w.gen(n[2], wasmproc, n.kind),
-          exp, mut, n[0].sym.name.s
-        )
-      )
-      #result = newSet(woSetGlobal, n[0].sym.getLoc, w.gen(n[2], wasmproc, nkAsgn))
-    inc b.nextGlobalIdx
-    #echo "#nextglobalidx ", b.nextGlobalIdx
-    #echo "#globals", b.m.globals.len
+      s.updateLoc(wasmproc.typ.params.len+wasmproc.locals.len, lockind, OnStatic)
+      wasmproc.locals.add(conf.mapType(s.typ))
+      result = w.genLocal(n, wasmproc)
 
 proc genCurly(w: WasmGen, n:PNode, wasmproc: var WAsmFunction, 
   parentKind: TNodeKind=nkNone): WasmNode =
@@ -1060,14 +1128,26 @@ proc genTupleConstr(w: WasmGen, n:PNode, wasmproc: var WAsmFunction,
 proc genDotExpr(w: WasmGen, n:PNode, wasmproc: var WAsmFunction, 
   parentKind: TNodeKind=nkNone): WasmNode =
   let conf = w.config
-  #echo conf.treeToYaml(n[1])
-  result = newLoad(
-    conf.mapLoadKind(n[1].sym.typ), 0, 1,
-    newAdd32(
-      w.gen(n[0], wasmproc, n.kind), # base object loc
-      newConst(n[1].sym.offset) # field offset
+  echo conf.treeToYaml(n[0])
+  echo "offs ", n[1].sym.name.s, " ", n[1].sym.offset, " ", n[1].sym.position
+  echo conf.treeToYaml(n[1])
+  if n[0].kind == nkSym:
+    result = newLoad(
+      conf.mapLoadKind(n[1].sym.typ), 0, 1,
+      newAdd32(
+        w.gen(n[0], wasmproc, n.kind), # base object loc
+        newConst(n[1].sym.offset) # field offset
+      )
     )
-  )
+  else:
+    echo "#TODO: dotexpr on non sym ", n[0].kind
+    result = newLoad(
+      conf.mapLoadKind(n[1].sym.typ), 0, 1,
+      newAdd32(
+        w.gen(n[0], wasmproc, n.kind), # base object loc
+        newConst(n[1].sym.offset) # field offset
+      )
+    )
 
 proc genBracketExpr(w: WasmGen, n:PNode, wasmproc: var WAsmFunction, 
   parentKind: TNodeKind=nkNone): WasmNode =
@@ -1169,7 +1249,7 @@ proc gen(w: WasmGen, n:PNode, wasmproc: var WAsmFunction, parentKind: TNodeKind=
     if n.sym.kind == skType:
       if not b.hasTypeInfo(n.sym):
         w.genTypeInfo(n.sym, wasmproc, n.kind)
-    result = conf.symLoc(n)
+    result = w.backendDerefNode(n.sym)
   of nkCurly:
     result = w.genCurly(n, wasmproc, n.kind)
   of nkBlockStmt:
