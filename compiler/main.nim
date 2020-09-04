@@ -21,6 +21,8 @@ import
   modules,
   modulegraphs, tables, rod, lineinfos, pathutils, vmprofiler
 
+import esgen # FIXME: move to leancompiler
+
 when not defined(leanCompiler):
   import jsgen, docgen, docgen2
 
@@ -133,6 +135,25 @@ proc commandCompileToJS(graph: ModuleGraph) =
     if optGenScript in graph.config.globalOptions:
       writeDepsFile(graph)
 
+proc commandCompileToES(graph: ModuleGraph) =
+  #when defined(leanCompiler):
+  #  globalError(graph.config, unknownLineInfo, "compiler wasn't built with JS code generator")
+  #else:
+  let conf = graph.config
+  conf.exc = excCpp
+
+  if conf.outFile.isEmpty:
+    conf.outFile = RelativeFile(conf.projectName & ".js")
+
+  #incl(gGlobalOptions, optSafeCode)
+  setTarget(graph.config.target, osJS, cpuJS)
+  #initDefines()
+  semanticPasses(graph)
+  registerPass(graph, ESgenPass)
+  compileProject(graph)
+  if optGenScript in graph.config.globalOptions:
+    writeDepsFile(graph)
+
 proc interactivePasses(graph: ModuleGraph) =
   initDefines(graph.config.symbols)
   defineSymbol(graph.config.symbols, "nimscript")
@@ -224,7 +245,11 @@ proc mainCommand*(graph: ModuleGraph) =
     of backendC: commandCompileToC(graph)
     of backendCpp: commandCompileToC(graph)
     of backendObjc: commandCompileToC(graph)
-    of backendJs: commandCompileToJS(graph)
+    of backendJs: 
+      if conf.isDefined("es"):
+        commandCompileToES(graph)
+      else: commandCompileToJS(graph)
+    
     of backendInvalid: doAssert false
 
   template docLikeCmd(body) =
