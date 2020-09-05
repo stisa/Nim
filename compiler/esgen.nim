@@ -28,23 +28,31 @@ implements the required case distinction.
 """
 
 import
-  ast, trees, magicsys, options,
+  ast, astalgo, trees, magicsys, options,
   nversion, msgs, idents, types,
   ropes, passes, ccgutils, wordrecg, renderer,
-  cgmeth, lowerings, sighashes, modulegraphs, 
+  cgmeth, lowerings, sighashes, pathutils,
   lineinfos, rodutils, transf, injectdestructors, sourcemap
 
-import math, tables, strutils, json, sets, intsets
-
+import strutils, intsets
+from math import classify
 
 from modulegraphs import ModuleGraph, PPassContext
+
+import backends/es/[esast, esstmt, esexpr, esrender]
 
 type
   ESGen = ref object of PPassContext
     module: PSym
     graph: ModuleGraph
     config: ConfigRef
-    sigConflicts: CountTable[SigHash]
+    #sigConflicts: CountTable[SigHash]
+
+  ESBackend = ref object of RootObj
+    ast: ESNode
+    generatedProcs: IntSet
+    generatedTypeInfos: IntSet
+    tmpcounter: int
 
   ESTypeKind = enum       # necessary JS "types"
     etyNone,                  # no type
@@ -57,120 +65,42 @@ type
     etyString,                # JavaScript's string
     etyObject,                # JavaScript's reference to an object
     etyBaseIndex              # base + index needed
-  TResKind = enum
-    resNone,                  # not set
-    resExpr,                  # is some complex expression
-    resVal,                   # is a temporary/value/l-value
-    resCallee                 # expression is callee
-  TCompRes = object
-    kind: TResKind
-    typ: ESTypeKind
-    res: Rope               # result part; index if this is an
-                            # (address, index)-tuple
-    address: Rope           # address of an (address, index)-tuple
-    tmpLoc: Rope            # tmp var which stores the (address, index)
-                            # pair to prevent multiple evals.
-                            # the tmp is initialized upon evaling the
-                            # address.
-                            # might be nil.
-                            # (see `maybeMakeTemp`)
 
-  TBlock = object
-    id: int                 # the ID of the label; positive means that it
-                            # has been used (i.e. the label should be emitted)
-    isLoop: bool            # whether it's a 'block' or 'while'
+proc hasProc(b: ESBackend, s: PSym): bool =
+  b.generatedProcs.contains(s.id)
 
-  PGlobals = ref object of RootObj
-    typeInfo, constants, code: Rope
-    forwarded: seq[PSym]
-    generatedSyms: IntSet
-    typeInfoGenerated: IntSet
-    unique: int    # for temp identifier generation
-    inSystem: bool
+proc hasTypeInfo(b: ESBackend, s: PSym): bool =
+  b.generatedTypeInfos.contains(s.id)
 
-  PProc = ref TProc
-  TProc = object
-    procDef: PNode
-    prc: PSym
-    globals, locals, body: Rope
-    options: TOptions
-    module: ESGen
-    g: PGlobals
-    generatedParamCopies: IntSet
-    beforeRetNeeded: bool
-    unique: int    # for temp identifier generation
-    blocks: seq[TBlock]
-    extraIndent: int
-    up: PProc     # up the call chain; required for closure support
-    declaredGlobals: IntSet
-
-template config*(p: PProc): ConfigRef = p.module.config
-
-proc indentLine(p: PProc, r: Rope): Rope =
-  result = r
-  var p = p
-  while true:
-    for i in 0..<p.blocks.len + p.extraIndent:
-      prepend(result, rope"  ")
-    if p.up == nil or p.up.prc != p.prc.owner:
-      break
-    p = p.up
-
-template line(p: PProc, added: string) =
-  p.body.add(indentLine(p, rope(added)))
-
-template line(p: PProc, added: Rope) =
-  p.body.add(indentLine(p, added))
-
-template lineF(p: PProc, frmt: FormatStr, args: varargs[Rope]) =
-  p.body.add(indentLine(p, ropes.`%`(frmt, args)))
-
-template nested(p, body) =
-  inc p.extraIndent
-  body
-  dec p.extraIndent
-
-proc newGlobals(): PGlobals =
+proc newBackend(): ESBackend =
   new(result)
-  result.forwarded = @[]
-  result.generatedSyms = initIntSet()
-  result.typeInfoGenerated = initIntSet()
+  result.ast = newESModule(":codegen-temp-module")
+  result.generatedProcs = initIntSet()
+  result.generatedTypeInfos = initIntSet()
 
-proc initCompRes(r: var TCompRes) =
-  r.address = nil
-  r.res = nil
-  r.tmpLoc = nil
-  r.typ = etyNone
-  r.kind = resNone
+proc updateBackendName(b: ESBackend, name:string) = b.ast.mname = name
 
-proc rdLoc(a: TCompRes): Rope {.inline.} =
-  if a.typ != etyBaseIndex:
-    result = a.res
-  else:
-    result = "$1[$2]" % [a.address, a.res]
+proc updateLoc(s: PSym, loc: int, kind: TLocKind, skind: TStorageLoc) =
+  s.loc.k = kind
+  s.loc.storage = skind
+  #s.loc.pos = loc
+  s.loc.r = loc.rope # for debug purposes
 
-proc newProc(globals: PGlobals, module: ESGen, procDef: PNode,
-             options: TOptions): PProc =
-  result = PProc(
-    blocks: @[],
-    options: options,
-    module: module,
-    procDef: procDef,
-    g: globals,
-    extraIndent: int(procDef != nil))
-  if procDef != nil: result.prc = procDef[namePos].sym
+proc exportOrUsed(s: PSym): bool =
+  ( s.flags.contains(sfExported) and 
+    s.skipGenericOwner.flags.contains(sfMainModule)
+  ) or s.flags.contains(sfUsed) or
+  ( s.flags.contains(sfExportc) and 
+    s.skipGenericOwner.flags.contains(sfMainModule) 
+  )
 
-proc initProcOptions(module: ESGen): TOptions =
-  result = module.config.options
-  if PGlobals(module.graph.backend).inSystem:
-    result.excl(optStackTrace)
 
-proc newInitProc(globals: PGlobals, module: ESGen): PProc =
-  result = newProc(globals, module, nil, initProcOptions(module))
-
-proc declareGlobal(p: PProc; id: int; r: Rope) =
-  if p.prc != nil and not p.declaredGlobals.containsOrIncl(id):
-    p.locals.addf("global $1;$n", [r])
+const nkGenSkippedKinds = { nkCommentStmt, nkPragma, nkEmpty, 
+                            nkTemplateDef, nkFuncDef, nkProcDef, nkMethodDef, 
+                            nkIteratorDef, nkMacroDef, nkIncludeStmt, 
+                            nkImportStmt, nkExportStmt, nkExportExceptStmt, 
+                            nkImportExceptStmt, nkImportAs, nkConverterDef,
+                            nkIncludeStmt, nkTypeSection}#, nkWhenStmt, nkWhenExpr }
 
 const
   MappedToObject = {tyObject, tyArray, tyTuple, tyOpenArray,
@@ -198,12 +128,12 @@ proc mapType(typ: PType): ESTypeKind =
     result = etyObject
   of tyNil: result = etyNull
   of tyGenericParam, tyGenericBody, tyGenericInvocation,
-     tyNone, tyFromExpr, tyForward, tyEmpty,
-     tyUntyped, tyTyped, tyTypeDesc, tyBuiltInTypeClass, tyCompositeTypeClass,
-     tyAnd, tyOr, tyNot, tyAnything, tyVoid:
+    tyNone, tyFromExpr, tyForward, tyEmpty,
+    tyUntyped, tyTyped, tyTypeDesc, tyBuiltInTypeClass, tyCompositeTypeClass,
+    tyAnd, tyOr, tyNot, tyAnything, tyVoid:
     result = etyNone
   of tyGenericInst, tyInferred, tyAlias, tyUserTypeClass, tyUserTypeClassInst,
-     tySink, tyOwned:
+    tySink, tyOwned:
     result = mapType(typ.lastSon)
   of tyStatic:
     if t.n != nil: result = mapType(lastSon t)
@@ -211,9 +141,6 @@ proc mapType(typ: PType): ESTypeKind =
   of tyProc: result = etyProc
   of tyCString: result = etyString
   of tyOptDeprecated: doAssert false
-
-proc mapType(p: PProc; typ: PType): ESTypeKind =
-  result = mapType(typ)
 
 proc mangleName(m: ESGen, s: PSym): Rope =
   proc validJsName(name: string): bool =
@@ -256,11 +183,6 @@ proc mangleName(m: ESGen, s: PSym): Rope =
       result = rope(x)
     # From ES5 on reserved words can be used as object field names
     if s.kind != skField:
-      if m.config.hcrOn:
-        # When hot reloading is enabled, we must ensure that the names
-        # of functions and types will be preserved across rebuilds:
-        result.add(idOrSig(s, m.module.name.s, m.sigConflicts))
-      else:
         result.add("_")
         result.add(rope(s.id))
     s.loc.r = result
@@ -282,14 +204,15 @@ proc escapeJSString(s: string): string =
     else: result.add(c)
   result.add("\"")
 
-proc makeJSString(s: string, escapeNonAscii = true): Rope =
+proc makeJSString(s: string, escapeNonAscii = true): string =
   if escapeNonAscii:
-    result = strutils.escape(s).rope
+    result = strutils.escape(s)
   else:
-    result = escapeJSString(s).rope
+    result = escapeJSString(s)
 
-proc rope(arg: Int128): Rope = rope($arg)
+proc gen(es: ESGen, n: PNode, piece: var ESNode, loc: SourceLocation = nil): ESNode
 
+#[
 proc genTypeInfo(p: PProc, typ: PType): Rope
 proc genObjectFields(p: PProc, typ: PType, n: PNode): Rope =
   var
@@ -438,406 +361,6 @@ proc genStmt(p: PProc, n: PNode)
 proc genProc(oldProc: PProc, prc: PSym): Rope
 proc genConstant(p: PProc, c: PSym)
 
-proc useMagic(p: PProc, name: string) =
-  if name.len == 0: return
-  var s = magicsys.getCompilerProc(p.module.graph, name)
-  if s != nil:
-    internalAssert p.config, s.kind in {skProc, skFunc, skMethod, skConverter}
-    if not p.g.generatedSyms.containsOrIncl(s.id):
-      let code = genProc(p, s)
-      p.g.constants.add(code)
-  else:
-    if p.prc != nil:
-      globalError(p.config, p.prc.info, "system module needs: " & name)
-    else:
-      rawMessage(p.config, errGenerated, "system module needs: " & name)
-
-proc isSimpleExpr(p: PProc; n: PNode): bool =
-  # calls all the way down --> can stay expression based
-  if n.kind in nkCallKinds+{nkBracketExpr, nkDotExpr, nkPar, nkTupleConstr} or
-      (n.kind in {nkObjConstr, nkBracket, nkCurly}):
-    for c in n:
-      if not p.isSimpleExpr(c): return false
-    result = true
-  elif n.isAtom:
-    result = true
-
-proc getTemp(p: PProc, defineInLocals: bool = true): Rope =
-  inc(p.unique)
-  result = "Tmp$1" % [rope(p.unique)]
-  if defineInLocals:
-    p.locals.add(p.indentLine("var $1;$n" % [result]))
-
-proc genAnd(p: PProc, a, b: PNode, r: var TCompRes) =
-  assert r.kind == resNone
-  var x, y: TCompRes
-  if p.isSimpleExpr(a) and p.isSimpleExpr(b):
-    gen(p, a, x)
-    gen(p, b, y)
-    r.kind = resExpr
-    r.res = "($1 && $2)" % [x.rdLoc, y.rdLoc]
-  else:
-    r.res = p.getTemp
-    r.kind = resVal
-    # while a and b:
-    # -->
-    # while true:
-    #   aa
-    #   if not a: tmp = false
-    #   else:
-    #     bb
-    #     tmp = b
-    # tmp
-    gen(p, a, x)
-    lineF(p, "if (!$1) $2 = false; else {", [x.rdLoc, r.rdLoc])
-    p.nested:
-      gen(p, b, y)
-      lineF(p, "$2 = $1;", [y.rdLoc, r.rdLoc])
-    line(p, "}")
-
-proc genOr(p: PProc, a, b: PNode, r: var TCompRes) =
-  assert r.kind == resNone
-  var x, y: TCompRes
-  if p.isSimpleExpr(a) and p.isSimpleExpr(b):
-    gen(p, a, x)
-    gen(p, b, y)
-    r.kind = resExpr
-    r.res = "($1 || $2)" % [x.rdLoc, y.rdLoc]
-  else:
-    r.res = p.getTemp
-    r.kind = resVal
-    gen(p, a, x)
-    lineF(p, "if ($1) $2 = true; else {", [x.rdLoc, r.rdLoc])
-    p.nested:
-      gen(p, b, y)
-      lineF(p, "$2 = $1;", [y.rdLoc, r.rdLoc])
-    line(p, "}")
-
-type
-  TMagicFrmt = array[0..1, string]
-  TMagicOps = array[mAddI..mStrToStr, TMagicFrmt]
-
-const # magic checked op; magic unchecked op;
-  jsMagics: TMagicOps = [
-    mAddI: ["addInt", ""],
-    mSubI: ["subInt", ""],
-    mMulI: ["mulInt", ""],
-    mDivI: ["divInt", ""],
-    mModI: ["modInt", ""],
-    mSucc: ["addInt", ""],
-    mPred: ["subInt", ""],
-    mAddF64: ["", ""],
-    mSubF64: ["", ""],
-    mMulF64: ["", ""],
-    mDivF64: ["", ""],
-    mShrI: ["", ""],
-    mShlI: ["", ""],
-    mAshrI: ["", ""],
-    mBitandI: ["", ""],
-    mBitorI: ["", ""],
-    mBitxorI: ["", ""],
-    mMinI: ["nimMin", "nimMin"],
-    mMaxI: ["nimMax", "nimMax"],
-    mAddU: ["", ""],
-    mSubU: ["", ""],
-    mMulU: ["", ""],
-    mDivU: ["", ""],
-    mModU: ["", ""],
-    mEqI: ["", ""],
-    mLeI: ["", ""],
-    mLtI: ["", ""],
-    mEqF64: ["", ""],
-    mLeF64: ["", ""],
-    mLtF64: ["", ""],
-    mLeU: ["", ""],
-    mLtU: ["", ""],
-    mEqEnum: ["", ""],
-    mLeEnum: ["", ""],
-    mLtEnum: ["", ""],
-    mEqCh: ["", ""],
-    mLeCh: ["", ""],
-    mLtCh: ["", ""],
-    mEqB: ["", ""],
-    mLeB: ["", ""],
-    mLtB: ["", ""],
-    mEqRef: ["", ""],
-    mLePtr: ["", ""],
-    mLtPtr: ["", ""],
-    mXor: ["", ""],
-    mEqCString: ["", ""],
-    mEqProc: ["", ""],
-    mUnaryMinusI: ["negInt", ""],
-    mUnaryMinusI64: ["negInt64", ""],
-    mAbsI: ["absInt", ""],
-    mNot: ["", ""],
-    mUnaryPlusI: ["", ""],
-    mBitnotI: ["", ""],
-    mUnaryPlusF64: ["", ""],
-    mUnaryMinusF64: ["", ""],
-    mCharToStr: ["nimCharToStr", "nimCharToStr"],
-    mBoolToStr: ["nimBoolToStr", "nimBoolToStr"],
-    mIntToStr: ["cstrToNimstr", "cstrToNimstr"],
-    mInt64ToStr: ["cstrToNimstr", "cstrToNimstr"],
-    mFloatToStr: ["cstrToNimstr", "cstrToNimstr"],
-    mCStrToStr: ["cstrToNimstr", "cstrToNimstr"],
-    mStrToStr: ["", ""]]
-
-proc needsTemp(p: PProc; n: PNode): bool =
-  # check if n contains a call to determine
-  # if a temp should be made to prevent multiple evals
-  if n.kind in nkCallKinds + {nkTupleConstr, nkObjConstr, nkBracket, nkCurly}:
-    return true
-  for c in n:
-    if needsTemp(p, c):
-      return true
-
-proc maybeMakeTemp(p: PProc, n: PNode; x: TCompRes): tuple[a, tmp: Rope] =
-  var
-    a = x.rdLoc
-    b = a
-  if needsTemp(p, n):
-    # if we have tmp just use it
-    if x.tmpLoc != nil and (mapType(n.typ) == etyBaseIndex or n.kind in {nkHiddenDeref, nkDerefExpr}):
-      b = "$1[0][$1[1]]" % [x.tmpLoc]
-      (a: a, tmp: b)
-    else:
-      let tmp = p.getTemp
-      b = tmp
-      a = "($1 = $2, $1)" % [tmp, a]
-      (a: a, tmp: b)
-  else:
-    (a: a, tmp: b)
-
-proc maybeMakeTempAssignable(p: PProc, n: PNode; x: TCompRes): tuple[a, tmp: Rope] =
-  var
-    a = x.rdLoc
-    b = a
-  if needsTemp(p, n):
-    # if we have tmp just use it
-    if x.tmpLoc != nil and (mapType(n.typ) == etyBaseIndex or n.kind in {nkHiddenDeref, nkDerefExpr}):
-      b = "$1[0][$1[1]]" % [x.tmpLoc]
-      result = (a: a, tmp: b)
-    elif x.tmpLoc != nil and n.kind == nkBracketExpr:
-      # genArrayAddr
-      var
-        address, index: TCompRes
-        first: Int128
-      gen(p, n[0], address)
-      gen(p, n[1], index)
-      let (m1, tmp1) = maybeMakeTemp(p, n[0], address)
-      let typ = skipTypes(n[0].typ, abstractPtrs)
-      if typ.kind == tyArray:
-        first = firstOrd(p.config, typ[0])
-      if optBoundsCheck in p.options:
-        useMagic(p, "chckIndx")
-        if first == 0: # save a couple chars
-          index.res = "chckIndx($1, 0, ($2).length-1)" % [index.res, tmp1]
-        else:
-          index.res = "chckIndx($1, $2, ($3).length+($2)-1)-($2)" % [
-            index.res, rope(first), tmp1]
-      elif first != 0:
-        index.res = "($1)-($2)" % [index.res, rope(first)]
-      else:
-        discard # index.res = index.res
-      let (n1, tmp2) = maybeMakeTemp(p, n[1], index)
-      result = (a: "$1[$2]" % [m1, n1], tmp: "$1[$2]" % [tmp1, tmp2])
-    # could also put here: nkDotExpr -> genFieldAccess, nkCheckedFieldExpr -> genCheckedFieldOp
-    # but the uses of maybeMakeTempAssignable don't need them
-    else:
-      result = (a: a, tmp: b)
-  else:
-    result = (a: a, tmp: b)
-
-template binaryExpr(p: PProc, n: PNode, r: var TCompRes, magic, frmt: string,
-                    reassign = false) =
-  # $1 and $2 in the `frmt` string bind to lhs and rhs of the expr,
-  # if $3 or $4 are present they will be substituted with temps for
-  # lhs and rhs respectively
-  var x, y: TCompRes
-  useMagic(p, magic)
-  gen(p, n[1], x)
-  gen(p, n[2], y)
-
-  var
-    a, tmp = x.rdLoc
-    b, tmp2 = y.rdLoc
-  when reassign:
-    (a, tmp) = maybeMakeTempAssignable(p, n[1], x)
-  else:
-    when "$3" in frmt: (a, tmp) = maybeMakeTemp(p, n[1], x)
-    when "$4" in frmt: (b, tmp2) = maybeMakeTemp(p, n[2], y)
-
-  r.res = frmt % [a, b, tmp, tmp2]
-  r.kind = resExpr
-
-proc unsignedTrimmerJS(size: BiggestInt): Rope =
-  case size
-  of 1: rope"& 0xff"
-  of 2: rope"& 0xffff"
-  of 4: rope">>> 0"
-  else: rope""
-
-
-template unsignedTrimmer(size: BiggestInt): Rope =
-  size.unsignedTrimmerJS
-
-proc binaryUintExpr(p: PProc, n: PNode, r: var TCompRes, op: string,
-                    reassign: static[bool] = false) =
-  var x, y: TCompRes
-  gen(p, n[1], x)
-  gen(p, n[2], y)
-  let trimmer = unsignedTrimmer(n[1].typ.skipTypes(abstractRange).size)
-  when reassign:
-    let (a, tmp) = maybeMakeTempAssignable(p, n[1], x)
-    r.res = "$1 = (($5 $2 $3) $4)" % [a, rope op, y.rdLoc, trimmer, tmp]
-  else:
-    r.res = "(($1 $2 $3) $4)" % [x.rdLoc, rope op, y.rdLoc, trimmer]
-  r.kind = resExpr
-
-template ternaryExpr(p: PProc, n: PNode, r: var TCompRes, magic, frmt: string) =
-  var x, y, z: TCompRes
-  useMagic(p, magic)
-  gen(p, n[1], x)
-  gen(p, n[2], y)
-  gen(p, n[3], z)
-  r.res = frmt % [x.rdLoc, y.rdLoc, z.rdLoc]
-  r.kind = resExpr
-
-template unaryExpr(p: PProc, n: PNode, r: var TCompRes, magic, frmt: string) =
-  # $1 binds to n[1], if $2 is present it will be substituted to a tmp of $1
-  useMagic(p, magic)
-  gen(p, n[1], r)
-  var a, tmp = r.rdLoc
-  if "$2" in frmt: (a, tmp) = maybeMakeTemp(p, n[1], r)
-  r.res = frmt % [a, tmp]
-  r.kind = resExpr
-
-proc arithAux(p: PProc, n: PNode, r: var TCompRes, op: TMagic) =
-  var
-    x, y: TCompRes
-    xLoc,yLoc: Rope
-  let i = ord(optOverflowCheck notin p.options)
-  useMagic(p, jsMagics[op][i])
-  if n.len > 2:
-    gen(p, n[1], x)
-    gen(p, n[2], y)
-    xLoc = x.rdLoc
-    yLoc = y.rdLoc
-  else:
-    gen(p, n[1], r)
-    xLoc = r.rdLoc
-
-  template applyFormat(frmt) =
-    r.res = frmt % [xLoc, yLoc]
-  template applyFormat(frmtA, frmtB) =
-    if i == 0: applyFormat(frmtA) else: applyFormat(frmtB)
-
-  case op:
-  of mAddI: applyFormat("addInt($1, $2)", "($1 + $2)")
-  of mSubI: applyFormat("subInt($1, $2)", "($1 - $2)")
-  of mMulI: applyFormat("mulInt($1, $2)", "($1 * $2)")
-  of mDivI: applyFormat("divInt($1, $2)", "Math.trunc($1 / $2)")
-  of mModI: applyFormat("modInt($1, $2)", "Math.trunc($1 % $2)")
-  of mSucc: applyFormat("addInt($1, $2)", "($1 + $2)")
-  of mPred: applyFormat("subInt($1, $2)", "($1 - $2)")
-  of mAddF64: applyFormat("($1 + $2)", "($1 + $2)")
-  of mSubF64: applyFormat("($1 - $2)", "($1 - $2)")
-  of mMulF64: applyFormat("($1 * $2)", "($1 * $2)")
-  of mDivF64: applyFormat("($1 / $2)", "($1 / $2)")
-  of mShrI: applyFormat("", "")
-  of mShlI: 
-    if n[1].typ.size <= 4:
-      applyFormat("($1 << $2)", "($1 << $2)")
-    else:
-      applyFormat("($1 * Math.pow(2,$2))", "($1 * Math.pow(2,$2))")
-  of mAshrI: 
-    if n[1].typ.size <= 4:
-      applyFormat("($1 >> $2)", "($1 >> $2)")
-    else:
-      applyFormat("Math.floor($1 / Math.pow(2,$2))", "Math.floor($1 / Math.pow(2,$2))")
-  of mBitandI: applyFormat("($1 & $2)", "($1 & $2)")
-  of mBitorI: applyFormat("($1 | $2)", "($1 | $2)")
-  of mBitxorI: applyFormat("($1 ^ $2)", "($1 ^ $2)")
-  of mMinI: applyFormat("nimMin($1, $2)", "nimMin($1, $2)")
-  of mMaxI: applyFormat("nimMax($1, $2)", "nimMax($1, $2)")
-  of mAddU: applyFormat("", "")
-  of mSubU: applyFormat("", "")
-  of mMulU: applyFormat("", "")
-  of mDivU: applyFormat("", "")
-  of mModU: applyFormat("($1 % $2)", "($1 % $2)")
-  of mEqI: applyFormat("($1 == $2)", "($1 == $2)")
-  of mLeI: applyFormat("($1 <= $2)", "($1 <= $2)")
-  of mLtI: applyFormat("($1 < $2)", "($1 < $2)")
-  of mEqF64: applyFormat("($1 == $2)", "($1 == $2)")
-  of mLeF64: applyFormat("($1 <= $2)", "($1 <= $2)")
-  of mLtF64: applyFormat("($1 < $2)", "($1 < $2)")
-  of mLeU: applyFormat("($1 <= $2)", "($1 <= $2)")
-  of mLtU: applyFormat("($1 < $2)", "($1 < $2)")
-  of mEqEnum: applyFormat("($1 == $2)", "($1 == $2)")
-  of mLeEnum: applyFormat("($1 <= $2)", "($1 <= $2)")
-  of mLtEnum: applyFormat("($1 < $2)", "($1 < $2)")
-  of mEqCh: applyFormat("($1 == $2)", "($1 == $2)")
-  of mLeCh: applyFormat("($1 <= $2)", "($1 <= $2)")
-  of mLtCh: applyFormat("($1 < $2)", "($1 < $2)")
-  of mEqB: applyFormat("($1 == $2)", "($1 == $2)")
-  of mLeB: applyFormat("($1 <= $2)", "($1 <= $2)")
-  of mLtB: applyFormat("($1 < $2)", "($1 < $2)")
-  of mEqRef: applyFormat("($1 == $2)", "($1 == $2)")
-  of mLePtr: applyFormat("($1 <= $2)", "($1 <= $2)")
-  of mLtPtr: applyFormat("($1 < $2)", "($1 < $2)")
-  of mXor: applyFormat("($1 != $2)", "($1 != $2)")
-  of mEqCString: applyFormat("($1 == $2)", "($1 == $2)")
-  of mEqProc: applyFormat("($1 == $2)", "($1 == $2)")
-  of mUnaryMinusI: applyFormat("negInt($1)", "-($1)")
-  of mUnaryMinusI64: applyFormat("negInt64($1)", "-($1)")
-  of mAbsI: applyFormat("absInt($1)", "Math.abs($1)")
-  of mNot: applyFormat("!($1)", "!($1)")
-  of mUnaryPlusI: applyFormat("+($1)", "+($1)")
-  of mBitnotI: applyFormat("~($1)", "~($1)")
-  of mUnaryPlusF64: applyFormat("+($1)", "+($1)")
-  of mUnaryMinusF64: applyFormat("-($1)", "-($1)")
-  of mCharToStr: applyFormat("nimCharToStr($1)", "nimCharToStr($1)")
-  of mBoolToStr: applyFormat("nimBoolToStr($1)", "nimBoolToStr($1)")
-  of mIntToStr: applyFormat("cstrToNimstr(($1)+\"\")", "cstrToNimstr(($1)+\"\")")
-  of mInt64ToStr: applyFormat("cstrToNimstr(($1)+\"\")", "cstrToNimstr(($1)+\"\")")
-  of mFloatToStr:
-    useMagic(p, "nimFloatToString")
-    applyFormat "cstrToNimstr(nimFloatToString($1))"
-  of mCStrToStr: applyFormat("cstrToNimstr($1)", "cstrToNimstr($1)")
-  of mStrToStr, mUnown, mIsolate: applyFormat("$1", "$1")
-  else:
-    assert false, $op
-
-proc arith(p: PProc, n: PNode, r: var TCompRes, op: TMagic) =
-  case op
-  of mAddU: binaryUintExpr(p, n, r, "+")
-  of mSubU: binaryUintExpr(p, n, r, "-")
-  of mMulU: binaryUintExpr(p, n, r, "*")
-  of mDivU: binaryUintExpr(p, n, r, "/")
-  of mDivI:
-    arithAux(p, n, r, op)
-  of mModI:
-    arithAux(p, n, r, op)
-  of mShrI:
-    var x, y: TCompRes
-    gen(p, n[1], x)
-    gen(p, n[2], y)
-    let trimmer = unsignedTrimmer(n[1].typ.skipTypes(abstractRange).size)
-    r.res = "(($1 $2) >>> $3)" % [x.rdLoc, trimmer, y.rdLoc]
-  of mCharToStr, mBoolToStr, mIntToStr, mInt64ToStr, mFloatToStr,
-      mCStrToStr, mStrToStr, mEnumToStr:
-    arithAux(p, n, r, op)
-  of mEqRef:
-    if mapType(n[1].typ) != etyBaseIndex:
-      arithAux(p, n, r, op)
-    else:
-      var x, y: TCompRes
-      gen(p, n[1], x)
-      gen(p, n[2], y)
-      r.res = "($# == $# && $# == $#)" % [x.address, y.address, x.res, y.res]
-  else:
-    arithAux(p, n, r, op)
-  r.kind = resExpr
 
 proc hasFrameInfo(p: PProc): bool =
   ({optLineTrace, optStackTrace} * p.options == {optLineTrace, optStackTrace}) and
@@ -2102,146 +1625,6 @@ proc genMove(p: PProc; n: PNode; r: var TCompRes) =
   genReset(p, n)
   #lineF(p, "$1 = $2;$n", [dest.rdLoc, src.rdLoc])
 
-proc genMagic(p: PProc, n: PNode, r: var TCompRes) =
-  var
-    a: TCompRes
-    line, filen: Rope
-  var op = n[0].sym.magic
-  case op
-  of mOr: genOr(p, n[1], n[2], r)
-  of mAnd: genAnd(p, n[1], n[2], r)
-  of mAddI..mStrToStr: arith(p, n, r, op)
-  of mRepr: genRepr(p, n, r)
-  of mSwap: genSwap(p, n)
-  of mAppendStrCh:
-    binaryExpr(p, n, r, "addChar",
-        "addChar($1, $2);")
-  of mAppendStrStr:
-    var lhs, rhs: TCompRes
-    gen(p, n[1], lhs)
-    gen(p, n[2], rhs)
-
-    if skipTypes(n[1].typ, abstractVarRange).kind == tyCString:
-      r.res = "$1 += $2;" % [lhs.rdLoc, rhs.rdLoc]
-    else:
-      let (a, tmp) = maybeMakeTemp(p, n[1], lhs)
-      r.res = "$1.push.apply($3, $2);" % [a, rhs.rdLoc, tmp]
-    r.kind = resExpr
-  of mAppendSeqElem:
-    var x, y: TCompRes
-    gen(p, n[1], x)
-    gen(p, n[2], y)
-    if mapType(n[2].typ) == etyBaseIndex:
-      let c = "[$1, $2]" % [y.address, y.res]
-      r.res = "$1.push($2);" % [x.rdLoc, c]
-    elif needsNoCopy(p, n[2]):
-      r.res = "$1.push($2);" % [x.rdLoc, y.rdLoc]
-    else:
-      useMagic(p, "nimCopy")
-      let c = getTemp(p, defineInLocals=false)
-      lineF(p, "var $1 = nimCopy(null, $2, $3);$n",
-            [c, y.rdLoc, genTypeInfo(p, n[2].typ)])
-      r.res = "$1.push($2);" % [x.rdLoc, c]
-    r.kind = resExpr
-  of mConStrStr:
-    genConStrStr(p, n, r)
-  of mEqStr:
-    binaryExpr(p, n, r, "eqStrings", "eqStrings($1, $2)")
-  of mLeStr:
-    binaryExpr(p, n, r, "cmpStrings", "(cmpStrings($1, $2) <= 0)")
-  of mLtStr:
-    binaryExpr(p, n, r, "cmpStrings", "(cmpStrings($1, $2) < 0)")
-  of mIsNil:
-    # we want to accept undefined, so we ==
-    if mapType(n[1].typ) != etyBaseIndex:
-      unaryExpr(p, n, r, "", "($1 == null)")
-    else:
-      var x: TCompRes
-      gen(p, n[1], x)
-      r.res = "($# == null && $# === 0)" % [x.address, x.res]
-  of mEnumToStr: genRepr(p, n, r)
-  of mNew, mNewFinalize: genNew(p, n)
-  of mChr: gen(p, n[1], r)
-  of mArrToSeq:
-    if needsNoCopy(p, n[1]):
-      gen(p, n[1], r)
-    else:
-      var x: TCompRes
-      gen(p, n[1], x)
-      useMagic(p, "nimCopy")
-      r.res = "nimCopy(null, $1, $2)" % [x.rdLoc, genTypeInfo(p, n.typ)]
-  of mDestroy: discard "ignore calls to the default destructor"
-  of mOrd: genOrd(p, n, r)
-  of mLengthStr, mLengthSeq, mLengthOpenArray, mLengthArray:
-    unaryExpr(p, n, r, "", "($1).length")
-  of mHigh:
-    unaryExpr(p, n, r, "", "(($1).length-1)")
-  of mInc:
-    if n[1].typ.skipTypes(abstractRange).kind in {tyUInt..tyUInt64}:
-      binaryUintExpr(p, n, r, "+", true)
-    else:
-      if optOverflowCheck notin p.options: binaryExpr(p, n, r, "", "$1 += $2")
-      else: binaryExpr(p, n, r, "addInt", "$1 = addInt($3, $2)", true)
-  of ast.mDec:
-    if n[1].typ.skipTypes(abstractRange).kind in {tyUInt..tyUInt64}:
-      binaryUintExpr(p, n, r, "-", true)
-    else:
-      if optOverflowCheck notin p.options: binaryExpr(p, n, r, "", "$1 -= $2")
-      else: binaryExpr(p, n, r, "subInt", "$1 = subInt($3, $2)", true)
-  of mSetLengthStr:
-    binaryExpr(p, n, r, "mnewString", "($1.length = $2)")
-  of mSetLengthSeq:
-    var x, y: TCompRes
-    gen(p, n[1], x)
-    gen(p, n[2], y)
-    let t = skipTypes(n[1].typ, abstractVar)[0]
-    let (a, tmp) = maybeMakeTemp(p, n[1], x)
-    let (b, tmp2) = maybeMakeTemp(p, n[2], y)
-    r.res = """if ($1.length < $2) { for (var i=$4.length;i<$5;++i) $4.push($3); }
-               else { $4.length = $5; }""" % [a, b, createVar(p, t, false), tmp, tmp2]
-    r.kind = resExpr
-  of mCard: unaryExpr(p, n, r, "SetCard", "SetCard($1)")
-  of mLtSet: binaryExpr(p, n, r, "SetLt", "SetLt($1, $2)")
-  of mLeSet: binaryExpr(p, n, r, "SetLe", "SetLe($1, $2)")
-  of mEqSet: binaryExpr(p, n, r, "SetEq", "SetEq($1, $2)")
-  of mMulSet: binaryExpr(p, n, r, "SetMul", "SetMul($1, $2)")
-  of mPlusSet: binaryExpr(p, n, r, "SetPlus", "SetPlus($1, $2)")
-  of mMinusSet: binaryExpr(p, n, r, "SetMinus", "SetMinus($1, $2)")
-  of mIncl: binaryExpr(p, n, r, "", "$1[$2] = true")
-  of mExcl: binaryExpr(p, n, r, "", "delete $1[$2]")
-  of mInSet:
-    binaryExpr(p, n, r, "", "($1[$2] != undefined)")
-  of mNewSeq: genNewSeq(p, n)
-  of mNewSeqOfCap: unaryExpr(p, n, r, "", "[]")
-  of mOf: genOf(p, n, r)
-  of mDefault: genDefault(p, n, r)
-  of mReset, mWasMoved: genReset(p, n)
-  of mEcho: genEcho(p, n, r)
-  of mNLen..mNError, mSlurp, mStaticExec:
-    localError(p.config, n.info, errXMustBeCompileTime % n[0].sym.name.s)
-  of mNewString: unaryExpr(p, n, r, "mnewString", "mnewString($1)")
-  of mNewStringOfCap:
-    unaryExpr(p, n, r, "mnewString", "mnewString(0)")
-  of mDotDot:
-    genProcForSymIfNeeded(p, n[0].sym)
-    genCall(p, n, r)
-  of mParseBiggestFloat:
-    useMagic(p, "nimParseBiggestFloat")
-    genCall(p, n, r)
-  of mSlice:
-    # arr.slice([begin[, end]]): 'end' is exclusive
-    var x, y, z: TCompRes
-    gen(p, n[1], x)
-    gen(p, n[2], y)
-    gen(p, n[3], z)
-    r.res = "($1.slice($2, $3+1))" % [x.rdLoc, y.rdLoc, z.rdLoc]
-    r.kind = resExpr
-  of mMove:
-    genMove(p, n, r)
-  else:
-    genCall(p, n, r)
-    #else internalError(p.config, e.info, 'genMagic: ' + magicToStr[op]);
-
 proc genSetConstr(p: PProc, n: PNode, r: var TCompRes) =
   var
     a, b: TCompRes
@@ -2559,269 +1942,683 @@ proc genCast(p: PProc, n: PNode, r: var TCompRes) =
   elif (dest.kind == tyPtr and mapType(p, dest) == etyObject) and src.kind == tyPointer:
     r.res = r.address
     r.typ = etyObject
+]#
 
-proc gen(p: PProc, n: PNode, r: var TCompRes) =
-  r.typ = etyNone
-  if r.kind != resCallee: r.kind = resNone
-  #r.address = nil
-  r.res = nil
+proc genProc(es: ESGen, prc: PSym) =
+  let ressym = if prc.ast.len > resultPos :prc.ast[resultPos] else: nil
+  var bdy = newBlockStmt()
+  if not ressym.isNil:
+    bdy.add(
+      newVarDecl(esLet, false,
+        [newVarDeclarator(
+          newESIdent("result", ressym.typ.typeToString),    
+          if mapType(ressym.typ) == etyBaseIndex:
+            newArrayExpr([newArrayExpr([newESEmitExpr("null")])])
+          else: newArrayExpr([newESEmitExpr("null")])
+        )]
+      )
+    )
+  var tmpbody = es.gen(transformBody(es.graph, prc, false), bdy)
+  bdy.add(tmpbody)
+  if not ressym.isNil:
+    #if ressym.typ.kind == tyVar:
+      bdy.add(
+        newReturnStmt(newESIdent("result"))
+      )
+    #else:
+    #  bdy.add(
+    #    newReturnStmt(newMemberExpr(newESIdent("result"), newESLiteral(0), false))
+    #  )
+  let declparams = prc.ast[paramsPos]
+  var params = newSeq[ESNode](declparams.len-1)
+  #echo es.config.treeToYaml(declparams)
+  for i, p in declparams:
+    echo i
+    if i == 0: continue
+    var tname: string
+    if not p[1].isNil and p[1].kind == nkSym: tname = p[1].sym.name.s
+    elif not p[2].isNil and not p[2].typ.isNil: tname = p[2].typ.typeToString
+    else:
+      echo es.config.treeToYaml(p)
+      es.config.internalError("param has no type: " & p[0].ident.s)
+    params[i-1] = newESIdent(p[0].ident.s, tname)
 
-  case n.kind
+  ESBackend(es.graph.backend).ast.add(
+    newESFuncDecl(
+      newESIdent(prc.name.s, if ressym.isNil: "" else: ressym.typ.typeToString),
+      bdy,
+      params,
+      card(prc.flags*{sfExported, sfExportc}) > 0
+    )
+  )
+
+proc useMagic(es: ESGen, name: string, piece: var ESNode) : ESNode=
+  if name.len == 0: es.config.internalError("empty compiler magic name")
+  var s = magicsys.getCompilerProc(es.graph, name)
+  if s != nil:
+    internalAssert es.config, s.kind in {skProc, skFunc, skMethod, skConverter}
+    if not ESBackend(es.graph.backend).generatedProcs.containsOrIncl(s.id):
+      genProc(es, s)
+  else:
+    es.config.internalError("system module needs: " & name)
+    
+proc isSimpleExpr(n: PNode): bool =
+  # calls all the way down --> can stay expression based
+  if n.kind in nkCallKinds+{nkBracketExpr, nkDotExpr, nkPar, nkTupleConstr} or
+      (n.kind in {nkObjConstr, nkBracket, nkCurly}):
+    for c in n:
+      if not isSimpleExpr(c): return false
+    result = true
+  elif n.isAtom:
+    result = true
+
+# proc getTemp(p: PProc, defineInLocals: bool = true): Rope =
+#   inc(p.unique)
+#   result = "Tmp$1" % [rope(p.unique)]
+#   if defineInLocals:
+#     p.locals.add(p.indentLine("var $1;$n" % [result]))
+
+proc genAnd(es: ESGen, a, b: PNode, piece: var ESNode): ESNode =
+  if isSimpleExpr(a) and isSimpleExpr(b):
+    result = newBinaryExpr("&&", es.gen(a, piece), es.gen(b, piece))
+  else:
+    es.config.internalError("TODO: genAnd")
+
+proc genOr(es: ESGen, a, b: PNode, piece: var ESNode): ESNode =
+  if isSimpleExpr(a) and isSimpleExpr(b):
+    result = newBinaryExpr("||", es.gen(a, piece), es.gen(b, piece))
+  else:
+    es.config.internalError("TODO: genOr")
+
+
+type
+  TMagicFrmt = array[0..1, string]
+  TMagicOps = array[mAddI..mStrToStr, TMagicFrmt]
+
+const # magic checked op; magic unchecked op;
+  jsMagics: TMagicOps = [
+    mAddI: ["addInt", ""],
+    mSubI: ["subInt", ""],
+    mMulI: ["mulInt", ""],
+    mDivI: ["divInt", ""],
+    mModI: ["modInt", ""],
+    mSucc: ["addInt", ""],
+    mPred: ["subInt", ""],
+    mAddF64: ["", ""],
+    mSubF64: ["", ""],
+    mMulF64: ["", ""],
+    mDivF64: ["", ""],
+    mShrI: ["", ""],
+    mShlI: ["", ""],
+    mAshrI: ["", ""],
+    mBitandI: ["", ""],
+    mBitorI: ["", ""],
+    mBitxorI: ["", ""],
+    mMinI: ["nimMin", "nimMin"],
+    mMaxI: ["nimMax", "nimMax"],
+    mAddU: ["", ""],
+    mSubU: ["", ""],
+    mMulU: ["", ""],
+    mDivU: ["", ""],
+    mModU: ["", ""],
+    mEqI: ["", ""],
+    mLeI: ["", ""],
+    mLtI: ["", ""],
+    mEqF64: ["", ""],
+    mLeF64: ["", ""],
+    mLtF64: ["", ""],
+    mLeU: ["", ""],
+    mLtU: ["", ""],
+    mEqEnum: ["", ""],
+    mLeEnum: ["", ""],
+    mLtEnum: ["", ""],
+    mEqCh: ["", ""],
+    mLeCh: ["", ""],
+    mLtCh: ["", ""],
+    mEqB: ["", ""],
+    mLeB: ["", ""],
+    mLtB: ["", ""],
+    mEqRef: ["", ""],
+    mLePtr: ["", ""],
+    mLtPtr: ["", ""],
+    mXor: ["", ""],
+    mEqCString: ["", ""],
+    mEqProc: ["", ""],
+    mUnaryMinusI: ["negInt", ""],
+    mUnaryMinusI64: ["negInt64", ""],
+    mAbsI: ["absInt", ""],
+    mNot: ["", ""],
+    mUnaryPlusI: ["", ""],
+    mBitnotI: ["", ""],
+    mUnaryPlusF64: ["", ""],
+    mUnaryMinusF64: ["", ""],
+    mCharToStr: ["nimCharToStr", "nimCharToStr"],
+    mBoolToStr: ["nimBoolToStr", "nimBoolToStr"],
+    mIntToStr: ["cstrToNimstr", "cstrToNimstr"],
+    mInt64ToStr: ["cstrToNimstr", "cstrToNimstr"],
+    mFloatToStr: ["cstrToNimstr", "cstrToNimstr"],
+    mCStrToStr: ["cstrToNimstr", "cstrToNimstr"],
+    mStrToStr: ["", ""]]
+
+proc needsTemp(n: PNode): bool =
+  # check if n contains a call to determine
+  # if a temp should be made to prevent multiple evals
+  if n.kind in nkCallKinds + {nkTupleConstr, nkObjConstr, nkBracket, nkCurly}:
+    return true
+  for c in n:
+    if needsTemp(c):
+      return true
+#[
+template binaryExpr(p: PProc, n: PNode, r: var TCompRes, magic, frmt: string,
+                    reassign = false) =
+  # $1 and $2 in the `frmt` string bind to lhs and rhs of the expr,
+  # if $3 or $4 are present they will be substituted with temps for
+  # lhs and rhs respectively
+  var x, y: TCompRes
+  useMagic(p, magic)
+  gen(p, n[1], x)
+  gen(p, n[2], y)
+
+  var
+    a, tmp = x.rdLoc
+    b, tmp2 = y.rdLoc
+  when reassign:
+    (a, tmp) = maybeMakeTempAssignable(p, n[1], x)
+  else:
+    when "$3" in frmt: (a, tmp) = maybeMakeTemp(p, n[1], x)
+    when "$4" in frmt: (b, tmp2) = maybeMakeTemp(p, n[2], y)
+
+  r.res = frmt % [a, b, tmp, tmp2]
+  r.kind = resExpr
+
+proc unsignedTrimmerJS(size: BiggestInt): Rope =
+  case size
+  of 1: rope"& 0xff"
+  of 2: rope"& 0xffff"
+  of 4: rope">>> 0"
+  else: rope""
+
+
+template unsignedTrimmer(size: BiggestInt): Rope =
+  size.unsignedTrimmerJS
+
+proc binaryUintExpr(p: PProc, n: PNode, r: var TCompRes, op: string,
+                    reassign: static[bool] = false) =
+  var x, y: TCompRes
+  gen(p, n[1], x)
+  gen(p, n[2], y)
+  let trimmer = unsignedTrimmer(n[1].typ.skipTypes(abstractRange).size)
+  when reassign:
+    let (a, tmp) = maybeMakeTempAssignable(p, n[1], x)
+    r.res = "$1 = (($5 $2 $3) $4)" % [a, rope op, y.rdLoc, trimmer, tmp]
+  else:
+    r.res = "(($1 $2 $3) $4)" % [x.rdLoc, rope op, y.rdLoc, trimmer]
+  r.kind = resExpr
+
+template ternaryExpr(p: PProc, n: PNode, r: var TCompRes, magic, frmt: string) =
+  var x, y, z: TCompRes
+  useMagic(p, magic)
+  gen(p, n[1], x)
+  gen(p, n[2], y)
+  gen(p, n[3], z)
+  r.res = frmt % [x.rdLoc, y.rdLoc, z.rdLoc]
+  r.kind = resExpr
+
+template unaryExpr(p: PProc, n: PNode, r: var TCompRes, magic, frmt: string) =
+  # $1 binds to n[1], if $2 is present it will be substituted to a tmp of $1
+  useMagic(p, magic)
+  gen(p, n[1], r)
+  var a, tmp = r.rdLoc
+  if "$2" in frmt: (a, tmp) = maybeMakeTemp(p, n[1], r)
+  r.res = frmt % [a, tmp]
+  r.kind = resExpr
+
+proc arithAux(p: PProc, n: PNode, r: var TCompRes, op: TMagic) =
+  var
+    x, y: TCompRes
+    xLoc,yLoc: Rope
+  let i = ord(optOverflowCheck notin p.options)
+  useMagic(p, jsMagics[op][i])
+  if n.len > 2:
+    gen(p, n[1], x)
+    gen(p, n[2], y)
+    xLoc = x.rdLoc
+    yLoc = y.rdLoc
+  else:
+    gen(p, n[1], r)
+    xLoc = r.rdLoc
+
+  template applyFormat(frmt) =
+    r.res = frmt % [xLoc, yLoc]
+  template applyFormat(frmtA, frmtB) =
+    if i == 0: applyFormat(frmtA) else: applyFormat(frmtB)
+
+  case op:
+  of mAddI: applyFormat("addInt($1, $2)", "($1 + $2)")
+  of mSubI: applyFormat("subInt($1, $2)", "($1 - $2)")
+  of mMulI: applyFormat("mulInt($1, $2)", "($1 * $2)")
+  of mDivI: applyFormat("divInt($1, $2)", "Math.trunc($1 / $2)")
+  of mModI: applyFormat("modInt($1, $2)", "Math.trunc($1 % $2)")
+  of mSucc: applyFormat("addInt($1, $2)", "($1 + $2)")
+  of mPred: applyFormat("subInt($1, $2)", "($1 - $2)")
+  of mAddF64: applyFormat("($1 + $2)", "($1 + $2)")
+  of mSubF64: applyFormat("($1 - $2)", "($1 - $2)")
+  of mMulF64: applyFormat("($1 * $2)", "($1 * $2)")
+  of mDivF64: applyFormat("($1 / $2)", "($1 / $2)")
+  of mShrI: applyFormat("", "")
+  of mShlI: 
+    if n[1].typ.size <= 4:
+      applyFormat("($1 << $2)", "($1 << $2)")
+    else:
+      applyFormat("($1 * Math.pow(2,$2))", "($1 * Math.pow(2,$2))")
+  of mAshrI: 
+    if n[1].typ.size <= 4:
+      applyFormat("($1 >> $2)", "($1 >> $2)")
+    else:
+      applyFormat("Math.floor($1 / Math.pow(2,$2))", "Math.floor($1 / Math.pow(2,$2))")
+  of mBitandI: applyFormat("($1 & $2)", "($1 & $2)")
+  of mBitorI: applyFormat("($1 | $2)", "($1 | $2)")
+  of mBitxorI: applyFormat("($1 ^ $2)", "($1 ^ $2)")
+  of mMinI: applyFormat("nimMin($1, $2)", "nimMin($1, $2)")
+  of mMaxI: applyFormat("nimMax($1, $2)", "nimMax($1, $2)")
+  of mAddU: applyFormat("", "")
+  of mSubU: applyFormat("", "")
+  of mMulU: applyFormat("", "")
+  of mDivU: applyFormat("", "")
+  of mModU: applyFormat("($1 % $2)", "($1 % $2)")
+  of mEqI: applyFormat("($1 == $2)", "($1 == $2)")
+  of mLeI: applyFormat("($1 <= $2)", "($1 <= $2)")
+  of mLtI: applyFormat("($1 < $2)", "($1 < $2)")
+  of mEqF64: applyFormat("($1 == $2)", "($1 == $2)")
+  of mLeF64: applyFormat("($1 <= $2)", "($1 <= $2)")
+  of mLtF64: applyFormat("($1 < $2)", "($1 < $2)")
+  of mLeU: applyFormat("($1 <= $2)", "($1 <= $2)")
+  of mLtU: applyFormat("($1 < $2)", "($1 < $2)")
+  of mEqEnum: applyFormat("($1 == $2)", "($1 == $2)")
+  of mLeEnum: applyFormat("($1 <= $2)", "($1 <= $2)")
+  of mLtEnum: applyFormat("($1 < $2)", "($1 < $2)")
+  of mEqCh: applyFormat("($1 == $2)", "($1 == $2)")
+  of mLeCh: applyFormat("($1 <= $2)", "($1 <= $2)")
+  of mLtCh: applyFormat("($1 < $2)", "($1 < $2)")
+  of mEqB: applyFormat("($1 == $2)", "($1 == $2)")
+  of mLeB: applyFormat("($1 <= $2)", "($1 <= $2)")
+  of mLtB: applyFormat("($1 < $2)", "($1 < $2)")
+  of mEqRef: applyFormat("($1 == $2)", "($1 == $2)")
+  of mLePtr: applyFormat("($1 <= $2)", "($1 <= $2)")
+  of mLtPtr: applyFormat("($1 < $2)", "($1 < $2)")
+  of mXor: applyFormat("($1 != $2)", "($1 != $2)")
+  of mEqCString: applyFormat("($1 == $2)", "($1 == $2)")
+  of mEqProc: applyFormat("($1 == $2)", "($1 == $2)")
+  of mUnaryMinusI: applyFormat("negInt($1)", "-($1)")
+  of mUnaryMinusI64: applyFormat("negInt64($1)", "-($1)")
+  of mAbsI: applyFormat("absInt($1)", "Math.abs($1)")
+  of mNot: applyFormat("!($1)", "!($1)")
+  of mUnaryPlusI: applyFormat("+($1)", "+($1)")
+  of mBitnotI: applyFormat("~($1)", "~($1)")
+  of mUnaryPlusF64: applyFormat("+($1)", "+($1)")
+  of mUnaryMinusF64: applyFormat("-($1)", "-($1)")
+  of mCharToStr: applyFormat("nimCharToStr($1)", "nimCharToStr($1)")
+  of mBoolToStr: applyFormat("nimBoolToStr($1)", "nimBoolToStr($1)")
+  of mIntToStr: applyFormat("cstrToNimstr(($1)+\"\")", "cstrToNimstr(($1)+\"\")")
+  of mInt64ToStr: applyFormat("cstrToNimstr(($1)+\"\")", "cstrToNimstr(($1)+\"\")")
+  of mFloatToStr:
+    useMagic(p, "nimFloatToString")
+    applyFormat "cstrToNimstr(nimFloatToString($1))"
+  of mCStrToStr: applyFormat("cstrToNimstr($1)", "cstrToNimstr($1)")
+  of mStrToStr, mUnown, mIsolate: applyFormat("$1", "$1")
+  else:
+    assert false, $op
+
+proc arith(p: PProc, n: PNode, r: var TCompRes, op: TMagic) =
+  case op
+  of mAddU: binaryUintExpr(p, n, r, "+")
+  of mSubU: binaryUintExpr(p, n, r, "-")
+  of mMulU: binaryUintExpr(p, n, r, "*")
+  of mDivU: binaryUintExpr(p, n, r, "/")
+  of mDivI:
+    arithAux(p, n, r, op)
+  of mModI:
+    arithAux(p, n, r, op)
+  of mShrI:
+    var x, y: TCompRes
+    gen(p, n[1], x)
+    gen(p, n[2], y)
+    let trimmer = unsignedTrimmer(n[1].typ.skipTypes(abstractRange).size)
+    r.res = "(($1 $2) >>> $3)" % [x.rdLoc, trimmer, y.rdLoc]
+  of mCharToStr, mBoolToStr, mIntToStr, mInt64ToStr, mFloatToStr,
+      mCStrToStr, mStrToStr, mEnumToStr:
+    arithAux(p, n, r, op)
+  of mEqRef:
+    if mapType(n[1].typ) != etyBaseIndex:
+      arithAux(p, n, r, op)
+    else:
+      var x, y: TCompRes
+      gen(p, n[1], x)
+      gen(p, n[2], y)
+      r.res = "($# == $# && $# == $#)" % [x.address, y.address, x.res, y.res]
+  else:
+    arithAux(p, n, r, op)
+  r.kind = resExpr
+
+
+proc genMagic(p: PProc, n: PNode, r: var TCompRes) =
+  var
+    a: TCompRes
+    line, filen: Rope
+  var op = n[0].sym.magic
+  case op
+  of mOr: genOr(p, n[1], n[2], r)
+  of mAnd: genAnd(p, n[1], n[2], r)
+  of mAddI..mStrToStr: arith(p, n, r, op)
+  of mRepr: genRepr(p, n, r)
+  of mSwap: genSwap(p, n)
+  of mAppendStrCh:
+    binaryExpr(p, n, r, "addChar",
+        "addChar($1, $2);")
+  of mAppendStrStr:
+    var lhs, rhs: TCompRes
+    gen(p, n[1], lhs)
+    gen(p, n[2], rhs)
+
+    if skipTypes(n[1].typ, abstractVarRange).kind == tyCString:
+      r.res = "$1 += $2;" % [lhs.rdLoc, rhs.rdLoc]
+    else:
+      let (a, tmp) = maybeMakeTemp(p, n[1], lhs)
+      r.res = "$1.push.apply($3, $2);" % [a, rhs.rdLoc, tmp]
+    r.kind = resExpr
+  of mAppendSeqElem:
+    var x, y: TCompRes
+    gen(p, n[1], x)
+    gen(p, n[2], y)
+    if mapType(n[2].typ) == etyBaseIndex:
+      let c = "[$1, $2]" % [y.address, y.res]
+      r.res = "$1.push($2);" % [x.rdLoc, c]
+    elif needsNoCopy(p, n[2]):
+      r.res = "$1.push($2);" % [x.rdLoc, y.rdLoc]
+    else:
+      useMagic(p, "nimCopy")
+      let c = getTemp(p, defineInLocals=false)
+      lineF(p, "var $1 = nimCopy(null, $2, $3);$n",
+            [c, y.rdLoc, genTypeInfo(p, n[2].typ)])
+      r.res = "$1.push($2);" % [x.rdLoc, c]
+    r.kind = resExpr
+  of mConStrStr:
+    genConStrStr(p, n, r)
+  of mEqStr:
+    binaryExpr(p, n, r, "eqStrings", "eqStrings($1, $2)")
+  of mLeStr:
+    binaryExpr(p, n, r, "cmpStrings", "(cmpStrings($1, $2) <= 0)")
+  of mLtStr:
+    binaryExpr(p, n, r, "cmpStrings", "(cmpStrings($1, $2) < 0)")
+  of mIsNil:
+    # we want to accept undefined, so we ==
+    if mapType(n[1].typ) != etyBaseIndex:
+      unaryExpr(p, n, r, "", "($1 == null)")
+    else:
+      var x: TCompRes
+      gen(p, n[1], x)
+      r.res = "($# == null && $# === 0)" % [x.address, x.res]
+  of mEnumToStr: genRepr(p, n, r)
+  of mNew, mNewFinalize: genNew(p, n)
+  of mChr: gen(p, n[1], r)
+  of mArrToSeq:
+    if needsNoCopy(p, n[1]):
+      gen(p, n[1], r)
+    else:
+      var x: TCompRes
+      gen(p, n[1], x)
+      useMagic(p, "nimCopy")
+      r.res = "nimCopy(null, $1, $2)" % [x.rdLoc, genTypeInfo(p, n.typ)]
+  of mDestroy: discard "ignore calls to the default destructor"
+  of mOrd: genOrd(p, n, r)
+  of mLengthStr, mLengthSeq, mLengthOpenArray, mLengthArray:
+    unaryExpr(p, n, r, "", "($1).length")
+  of mHigh:
+    unaryExpr(p, n, r, "", "(($1).length-1)")
+  of mInc:
+    if n[1].typ.skipTypes(abstractRange).kind in {tyUInt..tyUInt64}:
+      binaryUintExpr(p, n, r, "+", true)
+    else:
+      if optOverflowCheck notin p.options: binaryExpr(p, n, r, "", "$1 += $2")
+      else: binaryExpr(p, n, r, "addInt", "$1 = addInt($3, $2)", true)
+  of ast.mDec:
+    if n[1].typ.skipTypes(abstractRange).kind in {tyUInt..tyUInt64}:
+      binaryUintExpr(p, n, r, "-", true)
+    else:
+      if optOverflowCheck notin p.options: binaryExpr(p, n, r, "", "$1 -= $2")
+      else: binaryExpr(p, n, r, "subInt", "$1 = subInt($3, $2)", true)
+  of mSetLengthStr:
+    binaryExpr(p, n, r, "mnewString", "($1.length = $2)")
+  of mSetLengthSeq:
+    var x, y: TCompRes
+    gen(p, n[1], x)
+    gen(p, n[2], y)
+    let t = skipTypes(n[1].typ, abstractVar)[0]
+    let (a, tmp) = maybeMakeTemp(p, n[1], x)
+    let (b, tmp2) = maybeMakeTemp(p, n[2], y)
+    r.res = """if ($1.length < $2) { for (var i=$4.length;i<$5;++i) $4.push($3); }
+               else { $4.length = $5; }""" % [a, b, createVar(p, t, false), tmp, tmp2]
+    r.kind = resExpr
+  of mCard: unaryExpr(p, n, r, "SetCard", "SetCard($1)")
+  of mLtSet: binaryExpr(p, n, r, "SetLt", "SetLt($1, $2)")
+  of mLeSet: binaryExpr(p, n, r, "SetLe", "SetLe($1, $2)")
+  of mEqSet: binaryExpr(p, n, r, "SetEq", "SetEq($1, $2)")
+  of mMulSet: binaryExpr(p, n, r, "SetMul", "SetMul($1, $2)")
+  of mPlusSet: binaryExpr(p, n, r, "SetPlus", "SetPlus($1, $2)")
+  of mMinusSet: binaryExpr(p, n, r, "SetMinus", "SetMinus($1, $2)")
+  of mIncl: binaryExpr(p, n, r, "", "$1[$2] = true")
+  of mExcl: binaryExpr(p, n, r, "", "delete $1[$2]")
+  of mInSet:
+    binaryExpr(p, n, r, "", "($1[$2] != undefined)")
+  of mNewSeq: genNewSeq(p, n)
+  of mNewSeqOfCap: unaryExpr(p, n, r, "", "[]")
+  of mOf: genOf(p, n, r)
+  of mDefault: genDefault(p, n, r)
+  of mReset, mWasMoved: genReset(p, n)
+  of mEcho: genEcho(p, n, r)
+  of mNLen..mNError, mSlurp, mStaticExec:
+    localError(p.config, n.info, errXMustBeCompileTime % n[0].sym.name.s)
+  of mNewString: unaryExpr(p, n, r, "mnewString", "mnewString($1)")
+  of mNewStringOfCap:
+    unaryExpr(p, n, r, "mnewString", "mnewString(0)")
+  of mDotDot:
+    genProcForSymIfNeeded(p, n[0].sym)
+    genCall(p, n, r)
+  of mParseBiggestFloat:
+    useMagic(p, "nimParseBiggestFloat")
+    genCall(p, n, r)
+  of mSlice:
+    # arr.slice([begin[, end]]): 'end' is exclusive
+    var x, y, z: TCompRes
+    gen(p, n[1], x)
+    gen(p, n[2], y)
+    gen(p, n[3], z)
+    r.res = "($1.slice($2, $3+1))" % [x.rdLoc, y.rdLoc, z.rdLoc]
+    r.kind = resExpr
+  of mMove:
+    genMove(p, n, r)
+  else:
+    genCall(p, n, r)
+    #else internalError(p.config, e.info, 'genMagic: ' + magicToStr[op]);
+]#
+
+proc genMagicCall(es: ESGen, n: PNode, piece: var ESNode, loc: SourceLocation = nil) : ESNode=
+  es.config.internalError("TODO: genMagicCall")
+  if not es.graph.backend.ESBackend.generatedProcs.containsOrIncl(n[0].sym.id):
+    es.genProc(n[0].sym)
+
+
+proc genCall(es: ESGen, n: PNode, piece: var ESNode, loc: SourceLocation = nil) : ESNode=
+  if not es.graph.backend.ESBackend.generatedProcs.containsOrIncl(n[0].sym.id):
+    es.genProc(n[0].sym)
+
+  var args = newSeq[ESNode]()
+  for i, arg in n:
+    if i == 0: continue
+    args.add(es.gen(arg, piece))
+  result = newCallExpr(
+    newESIdent(n[0].sym.name.s), args
+  )
+proc genAsgn(es: ESGen, lhs, rhs: PNode, piece: var ESNode, loc: SourceLocation = nil): ESNode =
+  result = newExpressionStmt(
+    newAsgnExpr("=", es.gen(lhs, piece), es.gen(rhs, piece))
+  )
+proc gen(es: ESGen, n: PNode, piece: var ESNode, loc: SourceLocation = nil): ESNode =
+  let conf = es.config
+  let b = ESBackend(es.graph.backend)
+  
+  echo "#GTL: ", $n.kind, " module: ", conf.toFilename(n.info.fileIndex)
+  echo "# working on: ", n.kind
+  if not (n.kind == nkStmtList):
+    echo renderTree(n)
+    
+  case n.kind:
+  of nkGenSkippedKinds: result = newEmptyStmt() # returns ';'
   of nkSym:
-    genSym(p, n, r)
+    result = newESIdent(n.sym.name.s, n.sym.typ.typeToString)
   of nkCharLit..nkUInt64Lit:
     if n.typ.kind == tyBool:
-      r.res = if n.intVal == 0: rope"false" else: rope"true"
+      result = newESLiteral(n.intVal != 0)
     else:
-      r.res = rope(n.intVal)
-    r.kind = resExpr
+      result = newESLiteral(n.intVal)
   of nkNilLit:
     if isEmptyType(n.typ):
       discard
-    elif mapType(p, n.typ) == etyBaseIndex:
-      r.typ = etyBaseIndex
-      r.address = rope"null"
-      r.res = rope"0"
-      r.kind = resExpr
+    elif mapType(n.typ) == etyBaseIndex:
+      result = newArrayExpr([newESEmitExpr("null")])
     else:
-      r.res = rope"null"
-      r.kind = resExpr
+      result = newESEmitExpr("null")
   of nkStrLit..nkTripleStrLit:
-    if skipTypes(n.typ, abstractVarRange).kind == tyString:
-      if n.strVal.len != 0:
-        useMagic(p, "makeNimstrLit")
-        r.res = "makeNimstrLit($1)" % [makeJSString(n.strVal)]
-      else:
-        r.res = rope"[]"
-    else:
-      r.res = makeJSString(n.strVal, false)
-    r.kind = resExpr
+    result = newESLiteral(n.strVal)
   of nkFloatLit..nkFloat64Lit:
-    let f = n.floatVal
-    case classify(f)
-    of fcNan:
-      r.res = rope"NaN"
-    of fcNegZero:
-      r.res = rope"-0.0"
-    of fcZero:
-      r.res = rope"0.0"
-    of fcInf:
-      r.res = rope"Infinity"
-    of fcNegInf:
-      r.res = rope"-Infinity"
-    else: r.res = rope(f.toStrMaxPrecision)
-    r.kind = resExpr
+    result = newESLiteral(n.floatVal)
   of nkCallKinds:
     if isEmptyType(n.typ):
-      genLineDir(p, n)
+      result = genCall(es, n, piece) # TODO: use the fact that no result is needed
     if (n[0].kind == nkSym) and (n[0].sym.magic != mNone):
-      genMagic(p, n, r)
-    elif n[0].kind == nkSym and sfInfixCall in n[0].sym.flags and
-        n.len >= 1:
-      genInfixCall(p, n, r)
+      result = genMagicCall(es, n, piece)
     else:
-      genCall(p, n, r)
-  of nkClosure: gen(p, n[0], r)
-  of nkCurly: genSetConstr(p, n, r)
-  of nkBracket: genArrayConstr(p, n, r)
-  of nkPar, nkTupleConstr: genTupleConstr(p, n, r)
-  of nkObjConstr: genObjConstr(p, n, r)
-  of nkHiddenStdConv, nkHiddenSubConv, nkConv: genConv(p, n, r)
-  of nkAddr, nkHiddenAddr:
-    genAddr(p, n, r)
-  of nkDerefExpr, nkHiddenDeref: genDeref(p, n, r)
-  of nkBracketExpr: genArrayAccess(p, n, r)
-  of nkDotExpr: genFieldAccess(p, n, r)
-  of nkCheckedFieldExpr: genCheckedFieldOp(p, n, nil, r)
-  of nkObjDownConv: gen(p, n[0], r)
-  of nkObjUpConv: upConv(p, n, r)
-  of nkCast: genCast(p, n, r)
-  of nkChckRangeF: genRangeChck(p, n, r, "chckRangeF")
-  of nkChckRange64: genRangeChck(p, n, r, "chckRange64")
-  of nkChckRange: genRangeChck(p, n, r, "chckRange")
-  of nkStringToCString: convStrToCStr(p, n, r)
-  of nkCStringToString: convCStrToStr(p, n, r)
-  of nkEmpty: discard
-  of nkLambdaKinds:
-    let s = n[namePos].sym
-    discard mangleName(p.module, s)
-    r.res = s.loc.r
-    if lfNoDecl in s.loc.flags or s.magic != mNone: discard
-    elif not p.g.generatedSyms.containsOrIncl(s.id):
-      p.locals.add(genProc(p, s))
-  of nkType: r.res = genTypeInfo(p, n.typ)
-  of nkStmtList, nkStmtListExpr:
-    # this shows the distinction is nice for backends and should be kept
-    # in the frontend
-    let isExpr = not isEmptyType(n.typ)
-    for i in 0..<n.len - isExpr.ord:
-      genStmt(p, n[i])
-    if isExpr:
-      gen(p, lastSon(n), r)
-  of nkBlockStmt, nkBlockExpr: genBlock(p, n, r)
-  of nkIfStmt, nkIfExpr: genIf(p, n, r)
-  of nkWhen:
-    # This is "when nimvm" node
-    gen(p, n[1][0], r)
-  of nkWhileStmt: genWhileStmt(p, n)
-  of nkVarSection, nkLetSection: genVarStmt(p, n)
-  of nkConstSection: discard
-  of nkForStmt, nkParForStmt:
-    internalError(p.config, n.info, "for statement not eliminated")
-  of nkCaseStmt: genCaseJS(p, n, r)
-  of nkReturnStmt: genReturnStmt(p, n)
-  of nkBreakStmt: genBreakStmt(p, n)
-  of nkAsgn: genAsgn(p, n)
-  of nkFastAsgn: genFastAsgn(p, n)
-  of nkDiscardStmt:
-    if n[0].kind != nkEmpty:
-      genLineDir(p, n)
-      gen(p, n[0], r)
-  of nkAsmStmt: genAsmOrEmitStmt(p, n)
-  of nkTryStmt, nkHiddenTryStmt: genTry(p, n, r)
-  of nkRaiseStmt: genRaiseStmt(p, n)
-  of nkTypeSection, nkCommentStmt, nkIteratorDef, nkIncludeStmt,
-     nkImportStmt, nkImportExceptStmt, nkExportStmt, nkExportExceptStmt,
-     nkFromStmt, nkTemplateDef, nkMacroDef, nkStaticStmt: discard
-  of nkPragma: genPragma(p, n)
+      result = genCall(es, n, piece)
+  of nkVarSection:
+    result = newBlockStmt()
+    # TODO: if v[2] is nkCallKind no need for brackets, the returned result is already a var
+    for v in n.sons:
+      result.add(
+        newVarDecl(
+          esLet, v[0].sym.exportOrUsed,
+          [newVarDeclarator(es.gen(v[0], piece), newArrayExpr([es.gen(v[2], piece)]))]
+        )
+      )
+  of nkLetSection:
+    result = newBlockStmt()
+    for v in n.sons:
+      result.add(
+        newVarDecl(
+          esConst, v[0].sym.exportOrUsed,
+          [newVarDeclarator(es.gen(v[0], piece), es.gen(v[2], piece))]
+        )
+      )
+  of nkAsgn:
+    result = es.genAsgn(n[0], n[1], piece)
+  of nkStmtListExpr:
+    for i, son in n.sons:
+      if i == n.sons.len-1:
+        result = es.gen(son,piece)
+      piece.add(es.gen(son,piece))
+  of nkStmtList:
+    result = newBlockStmt()
+    for son in n.sons:
+      result.add(es.gen(son,piece))
+  of nkBracket:
+    result = newArrayExpr()
+    for el in n.sons:
+      result.add(es.gen(el,piece))
+  of nkWhileStmt:
+    result = newWhileStmt(
+      es.gen(n[0], piece),
+      es.gen(n[1], piece)
+    )
+  of nkBlockStmt:
+    echo es.config.treeToYaml(n)
+    result = newLabeledStmt(
+      newESIdent(n[0].sym.name.s.mangle),
+      es.gen(n[1], piece)
+    )
+  else: internalError(es.config, "gen: unknown node type: " & $n.kind)
+
+  #[
+  of nkClosure:
+  of nkCurly:
+  of nkBracket:
+  of nkPar, nkTupleConstr:
+  of nkObjConstr:
+  of nkHiddenStdConv, nkHiddenSubConv, nkConv:
+  of nkAddr, nkHiddenAddr
+  of nkDerefExpr, nkHiddenDeref:
+  of nkBracketExpr:
+  of nkDotExpr:
+  of nkCheckedFieldExpr:
+  of nkObjDownConv:
+  of nkObjUpConv:
+  of nkCast:
+  of nkChckRangeF:
+  of nkChckRange64:
+  of nkChckRange:
+  of nkStringToCString:
+  of nkCStringToString:
+  of nkEmpty:
+  of nkLambdaKinds
+  of nkType:
+  of nkStmtList, nkStmtListExpr
+  of nkBlockStmt, nkBlockExpr:
+  of nkIfStmt, nkIfExpr:
+  of nkWhileStmt:
+  of nkVarSection, nkLetSection:
+  of nkConstSection:
+  of nkCaseStmt:
+  of nkReturnStmt:
+  of nkBreakStmt:
+  of nkAsgn:
+  of nkFastAsgn:
+  of nkDiscardStmt
+  of nkAsmStmt:
+  of nkTryStmt, nkHiddenTryStmt:
+  of nkRaiseStmt:
+  of nkPragma:
   of nkProcDef, nkFuncDef, nkMethodDef, nkConverterDef:
-    var s = n[namePos].sym
-    if {sfExportc, sfCompilerProc} * s.flags == {sfExportc}:
-      genSym(p, n[namePos], r)
-      r.res = nil
-  of nkGotoState, nkState:
-    internalError(p.config, n.info, "first class iterators not implemented")
-  of nkPragmaBlock: gen(p, n.lastSon, r)
-  of nkComesFrom:
-    discard "XXX to implement for better stack traces"
-  else: internalError(p.config, n.info, "gen: unknown node type: " & $n.kind)
-
-proc newModule(g: ModuleGraph; module: PSym): ESGen =
-  new(result)
-  result.module = module
-  result.sigConflicts = initCountTable[SigHash]()
-  if g.backend == nil:
-    g.backend = newGlobals()
-  result.graph = g
-  result.config = g.config
-  if sfSystemModule in module.flags:
-    PGlobals(g.backend).inSystem = true
-
-proc genHeader(): Rope =
-  result = rope("""/* Generated by the Nim Compiler v$1 */
-    var framePtr = null;
-    var excHandler = 0;
-    var lastJSError = null;
-    if (typeof Int8Array === 'undefined') Int8Array = Array;
-    if (typeof Int16Array === 'undefined') Int16Array = Array;
-    if (typeof Int32Array === 'undefined') Int32Array = Array;
-    if (typeof Uint8Array === 'undefined') Uint8Array = Array;
-    if (typeof Uint16Array === 'undefined') Uint16Array = Array;
-    if (typeof Uint32Array === 'undefined') Uint32Array = Array;
-    if (typeof Float32Array === 'undefined') Float32Array = Array;
-    if (typeof Float64Array === 'undefined') Float64Array = Array;
-  """.unindent.format(VersionAsString))
-
-proc addHcrInitGuards(p: PProc, n: PNode,
-                      moduleLoadedVar: Rope, inInitGuard: var bool) =
-  if n.kind == nkStmtList:
-    for child in n:
-      addHcrInitGuards(p, child, moduleLoadedVar, inInitGuard)
-  else:
-    let stmtShouldExecute = n.kind in {
-      nkProcDef, nkFuncDef, nkMethodDef,nkConverterDef,
-      nkVarSection, nkLetSection} or nfExecuteOnReload in n.flags
-
-    if inInitGuard:
-      if stmtShouldExecute:
-        dec p.extraIndent
-        line(p, "}\L")
-        inInitGuard = false
-    else:
-      if not stmtShouldExecute:
-        lineF(p, "if ($1 == undefined) {$n", [moduleLoadedVar])
-        inc p.extraIndent
-        inInitGuard = true
-
-    genStmt(p, n)
-
-proc genModule(p: PProc, n: PNode) =
-  if optStackTrace in p.options:
-    p.body.add(frameCreate(p,
-        makeJSString("module " & p.module.module.name.s),
-        makeJSString(toFilenameOption(p.config, p.module.module.info.fileIndex, foStacktrace))))
-  var transformedN = transformStmt(p.module.graph, p.module.module, n)
-  if sfInjectDestructors in p.module.module.flags:
-    transformedN = injectDestructorCalls(p.module.graph, p.module.module, transformedN)
-  if p.config.hcrOn and n.kind == nkStmtList:
-    let moduleSym = p.module.module
-    var moduleLoadedVar = rope(moduleSym.name.s) & "_loaded" &
-                          idOrSig(moduleSym, moduleSym.name.s, p.module.sigConflicts)
-    lineF(p, "var $1;$n", [moduleLoadedVar])
-    var inGuardedBlock = false
-
-    addHcrInitGuards(p, transformedN, moduleLoadedVar, inGuardedBlock)
-
-    if inGuardedBlock:
-      dec p.extraIndent
-      line(p, "}\L")
-
-    lineF(p, "$1 = true;$n", [moduleLoadedVar])
-  else:
-    genStmt(p, transformedN)
-
-  if optStackTrace in p.options:
-    p.body.add(frameDestroy(p))
+  of nkPragmaBlock:
+  ]#
 
 proc myProcess(b: PPassContext, n: PNode): PNode =
   result = n
   let m = ESGen(b)
   if passes.skipCodegen(m.config, n): return n
   if m.module == nil: internalError(m.config, n.info, "myProcess")
-  let globals = PGlobals(m.graph.backend)
-  var p = newInitProc(globals, m)
-  p.unique = globals.unique
-  genModule(p, n)
-  p.g.code.add(p.locals)
-  p.g.code.add(p.body)
+  let es = ESBackend(m.graph.backend)
+  
+  if es.ast.mname notin toFilename(m.config, n.info): return # FIXME: this skippes everything not coming from mainmodule
+  var transfN = transformStmt(m.graph,m.module,n)
+  if transfN.kind in nkGenSkippedKinds: return
 
-proc wholeCode(graph: ModuleGraph; m: ESGen): Rope =
-  let globals = PGlobals(graph.backend)
-  for prc in globals.forwarded:
-    if not globals.generatedSyms.containsOrIncl(prc.id):
-      var p = newInitProc(globals, m)
-      attachProc(p, prc)
-
-  var disp = generateMethodDispatchers(graph)
-  for i in 0..<disp.len:
-    let prc = disp[i].sym
-    if not globals.generatedSyms.containsOrIncl(prc.id):
-      var p = newInitProc(globals, m)
-      attachProc(p, prc)
-
-  result = globals.typeInfo & globals.constants & globals.code
+  es.ast.add(m.gen(transfN, es.ast))
 
 proc myClose(graph: ModuleGraph; b: PPassContext, n: PNode): PNode =
+  if passes.skipCodegen(graph.config, n): return n
   result = myProcess(b, n)
+  
   var m = ESGen(b)
+  let es = ESBackend(m.graph.backend)
   if sfMainModule in m.module.flags:
-    for destructorCall in graph.globalDestructors:
-      n.add destructorCall
-  if sfSystemModule in m.module.flags:
-    PGlobals(graph.backend).inSystem = false
-  if passes.skipCodegen(m.config, n): return n
-  if sfMainModule in m.module.flags:
-    var code = genHeader() & wholeCode(graph, m)
     let outFile = m.config.prepareToWriteOutput()
-
-    if optSourcemap in m.config.globalOptions:
-      var map: SourceMap
-      (code, map) = genSourceMap($(code), outFile.string)
-      writeFile(outFile.string & ".map", $(%map))
-    discard writeRopeIfNotEqual(code, outFile)
+    writeFile($outFile, es.ast.render())
 
 proc myOpen(graph: ModuleGraph; s: PSym): PPassContext =
-  result = newModule(graph, s)
+  var es = ESGen(module: s, graph: graph, config: graph.config)
+  if es.graph.backend == nil:
+    es.graph.backend = newBackend()
+  if s.flags.contains(sfMainModule):
+    ESBackend(es.graph.backend).updateBackendName(s.name.s)
+  result = es
 
 const ESgenPass* = makePass(myOpen, myProcess, myClose)
 

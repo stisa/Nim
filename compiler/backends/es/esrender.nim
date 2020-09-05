@@ -15,7 +15,7 @@ proc renderLit*(lit:ESNode):string =
   case lit.typ:
   of ekBoolLit: result = $lit.bval
   of ekFloatLit: 
-    let f = lit.fVal
+    let f = lit.fval
     if f != f: result = "NaN"
     elif f == 0.0: result = "0.0"
     elif f == 0.5 * f:
@@ -85,8 +85,8 @@ proc renderReturnStmt(s:ESNode):string =
   result = "return " & render(s.argument) & ";"
 
 proc renderLabeledStmt(s:ESNode):string = 
-  result = render(s.llabel) & ":\n"
-  add result, render(s.body) & ";"
+  result = render(s.llabel) & ": {\n"
+  add result, render(s.body) & "};"
 
 proc renderBreakStmt(s:ESNode):string =
   result = "break "

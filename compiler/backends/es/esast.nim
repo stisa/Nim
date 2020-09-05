@@ -141,7 +141,7 @@ type
     of ekIfStatement:
       itest: ESNode # expression
       iconsequent*: ESNode #statement
-      ialternate*: ESnode # statement
+      ialternate*: ESNode # statement
     of ekSwitchStatement:
       sdiscriminant*: ESNode # expression
       scases*: seq[ESNode] #switchcase
@@ -459,19 +459,19 @@ proc body*(n: ESNode):ESNode =
 proc newSourceLoc*(file:string, starts,ends:tuple[line,col:int]): SourceLocation=
   SourceLocation(source: file, starts: starts, ends: ends)
 
-proc newNode*(kind:ESNodeKind,loc:SourceLocation=newSourceLoc("nil",(-1,-1),(-1,-1))):ESNode =
+proc newESNode*(kind:ESNodeKind,loc:SourceLocation=newSourceLoc("nil",(-1,-1),(-1,-1))):ESNode =
   ESNode(typ: kind, loc:loc)
 
-proc newIdent*(name:string, loc:SourceLocation=nil):ESNode =
-  result = newNode(ekIdentifier,loc)
+proc newESIdent*(name:string, loc:SourceLocation=nil):ESNode =
+  result = newESNode(ekIdentifier,loc)
   result.name = name
 
-proc newIdent*(name:string, typ: string, loc:SourceLocation=nil):ESNode =
-  result = newNode(ekIdentifier,loc)
+proc newESIdent*(name:string, typ: string, loc:SourceLocation=nil):ESNode =
+  result = newESNode(ekIdentifier,loc)
   result.ptyp = typ
   result.name = name
 
-proc newLiteral*[T: SomeNumber|bool](val:T,loc:SourceLocation=nil):ESNode =
+proc newESLiteral*[T: SomeNumber|bool|char](val:T,loc:SourceLocation=nil):ESNode =
   var kind : ESNodeKind
   if T is bool:
     kind = ekBoolLit
@@ -479,40 +479,40 @@ proc newLiteral*[T: SomeNumber|bool](val:T,loc:SourceLocation=nil):ESNode =
     kind = ekFloatLit
   elif T is SomeInteger:
     kind = ekIntLit
-  elif T is string:
-    kind = ekStrLit
-  result = newNode(kind,loc)
+  elif T is char:
+    kind = ekIntLit
+  result = newESNode(kind,loc)
   result.value = val
 
-proc newLiteral*(loc:SourceLocation=nil):ESNode =
-  result = newNode(ekNullLit,loc)
+proc newESLiteral*(loc:SourceLocation=nil):ESNode =
+  result = newESNode(ekNullLit,loc)
 
-proc newProgram*(loc:SourceLocation):ESNode = 
-  result = newNode(ekProgram,loc)
+proc newESProgram*(loc:SourceLocation):ESNode = 
+  result = newESNode(ekProgram,loc)
   result.pbody = newSeq[ESNode]()
 
-proc newProgram*(body:varargs[ESNode],loc:SourceLocation=nil):ESNode = 
-  result = newNode(ekProgram,loc)
+proc newESProgram*(body:varargs[ESNode],loc:SourceLocation=nil):ESNode = 
+  result = newESNode(ekProgram,loc)
   result.pbody = @body
 
-proc newModule*(name:string):ESNode = 
-  result = newNode(ekModule)
+proc newESModule*(name:string):ESNode = 
+  result = newESNode(ekModule)
   result.mname = name
   result.mbody = newSeq[ESNode]()
   result.mexports = newSeq[ESNode]()
   result.mimports = newSeq[ESNode]()
 
-proc newImport*(module,ident:string):ESNode =
-  result = newNode(ekImport)
+proc newESImport*(module,ident:string):ESNode =
+  result = newESNode(ekImport)
   result.iident = ident
   result.imodule = module
 
-proc newExport*(ident:string):ESNode =
-  result = newNode(ekExport)
+proc newESExport*(ident:string):ESNode =
+  result = newESNode(ekExport)
   result.eident = ident
 
-proc newFuncDecl*(id,body:ESNode, params:varargs[ESNode], exp: bool=false, loc:SourceLocation=nil):ESNode =
-  result = newNode(ekFunctionDeclaration,loc)
+proc newESFuncDecl*(id,body:ESNode, params:openArray[ESNode], exp: bool=false, loc:SourceLocation=nil):ESNode =
+  result = newESNode(ekFunctionDeclaration,loc)
   assert id.typ == ekIdentifier
   assert body.typ == ekBlockStatement
   for el in params: assert el.isPattern
@@ -521,6 +521,6 @@ proc newFuncDecl*(id,body:ESNode, params:varargs[ESNode], exp: bool=false, loc:S
   result.params = @params
   result.body = body
 
-proc newEmitExpr*(code:string, loc:SourceLocation=nil):ESNode =
-  result = newNode(ekEmit, loc)
+proc newESEmitExpr*(code:string, loc:SourceLocation=nil):ESNode =
+  result = newESNode(ekEmit, loc)
   result.code = code
