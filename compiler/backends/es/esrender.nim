@@ -39,7 +39,7 @@ proc renderModule(p:ESNode): string =
   for i in p.mimports:
     add result, "\n" & render(i, indlvl)
   for el in p.mbody:
-    add result, "\n"&render(el, indlvl)
+    add result, "\n" & render(el, indlvl)
   for e in p.mexports:
     add result, "\n" & render(e, indlvl)
 
@@ -49,8 +49,20 @@ proc renderImport(p:ESNode): string =
 proc renderExport(p:ESNode): string =
   result = &"export {{ {p.eident} }};"
 
+proc renderVarDeclarator(v:ESNode):string =
+  #result = fmt"{render(v.vid)} /*{v.vid.ptyp}*/ = {render(v.vinit)}"
+  if v.vid.typ == ekIdentifier:
+    result = fmt"{render(v.vid)} /*{v.vid.ptyp}*/ = {render(v.vinit)}"
+  else:
+    result = fmt"{render(v.vid)} /**/ = {render(v.vinit)}"
+
 proc renderParam(p: ESNode): string =
-  result = &"{p.name} /*{p.ptyp}*/" 
+  if p.typ == ekIdentifier:
+    result = &"{p.name} /*{p.ptyp}*/" 
+  elif p.typ == ekVariableDeclarator:
+    result = renderVarDeclarator(p)
+  else:
+    assert(p.isPattern, $p.typ)
 
 proc renderFunc(f:ESNode, indlvl=0):string =
   result = if f.fexported: "export " else: ""
@@ -58,17 +70,15 @@ proc renderFunc(f:ESNode, indlvl=0):string =
   for i,par in f.params:
     add result, renderParam par
     if i!=f.params.len-1: add result , ", "
-  add result, ") {$1\n} /*$2*/" % [render(f.body).indent(indlvl+2), f.id.ptyp]
+  add result, ") {\n$1\n} /*$2*/" % [render(f.body).indent(indlvl+2), f.id.ptyp]
 
 proc renderExprStmt(e:ESNode, indlvl=0):string =
   (render(e.expression) & ";").indent(indlvl)
 
 proc renderBlockStmt(b:ESNode, indlvl=0):string =
   result = ""
-  var first = false
-  for s in b.bbody:
-    if first:
-      first = false
+  for i, s in b.bbody:
+    if i == 0: discard
     else:
       add result, "\n"
     add result, render(s) #& ";" 
@@ -84,9 +94,10 @@ proc renderWithStmt(s:ESNode):string =
 proc renderReturnStmt(s:ESNode):string =
   result = "return " & render(s.argument) & ";"
 
-proc renderLabeledStmt(s:ESNode):string = 
+proc renderLabeledStmt(s:ESNode, indlvl = 0):string = 
   result = render(s.llabel) & ": {\n"
-  add result, render(s.body) & "};"
+  add result, render(s.body).indent(indlvl+2) & 
+  "\n};"
 
 proc renderBreakStmt(s:ESNode):string =
   result = "break "
@@ -134,8 +145,8 @@ proc renderTryStmt(t:ESNode):string =
 proc renderCatchClause(c:ESNode):string =
   result = "catch ($1) {$2}" % [render(c.cparam), render(c.body)]
 
-proc renderWhileStmt(w:ESNode):string =
-  result = "while ($1) {\n$2\n}" % [render(w.test), render(w.body)]
+proc renderWhileStmt(w:ESNode, indlvl=0):string =
+  result = "while ($1) {\n$2\n}" % [render(w.test), render(w.body).indent(indlvl+2)]
 
 proc renderDoWhileStmt(d:ESNode):string =
   result = "do {\n$1\n} while ($2)" % [render(d.body),render(d.test)]
@@ -163,9 +174,6 @@ proc renderVarDecl(v:ESNode):string =
       add result,", "
     else:
       add result,";"
-
-proc renderVarDeclarator(v:ESNode):string =
-  result = fmt"{render(v.vid)} /*{v.vid.ptyp}*/ = {render(v.vinit)}"
 
 proc renderThisExpr(t:ESNode):string = "this"
 
@@ -215,7 +223,7 @@ proc renderMemberExpr(m:ESNode):string =
   if m.computed:
     result = "$1.$2" % [render(m.mobject), render(m.property)]
   else:
-    result = "$1[\"$2\"]" % [render(m.mobject), render(m.property)]
+    result = "$1[$2]" % [render(m.mobject), render(m.property)]
 
 proc renderCondExpr(c:ESNode):string =
   result = "$1 ? ($2) : ($3)" % [render(c.test), render(c.cconsequent),
@@ -284,7 +292,7 @@ proc render*(en:ESNode, indlvl=0):string =
   of ekReturnStatement:
     add result, renderReturnStmt(en)
   of ekLabeledStatement:
-    add result, renderLabeledStmt(en)
+    add result, renderLabeledStmt(en, indlvl)
   of ekBreakStatement:
     add result, renderBreakStmt(en)
   of ekContinueStatement:
@@ -302,7 +310,7 @@ proc render*(en:ESNode, indlvl=0):string =
   of ekCatchClause:
     add result, renderCatchClause(en)
   of ekWhileStatement:
-    add result, renderWhileStmt(en)
+    add result, renderWhileStmt(en, indlvl)
   of ekDoWhileStatement:
     add result, renderDoWhileStmt(en)
   of ekForStatement:
@@ -354,4 +362,4 @@ proc renderAndClean*(esn:ESNode):string =
   result = render(esn)
   #for ln in s.splitLines:
   #  if ln == "": continue
-  # result.add(ln&"\n")
+  #  result.add(ln&"\n")

@@ -258,7 +258,7 @@ proc isStatement*(n:ESNode):bool =
             ekForStatement, ekForInStatement, ekEmit} or n.isDeclaration()
 
 proc isPattern*(n:ESNode):bool =
-  n.typ in {ekIdentifier} #es5: only identifier matchs pattern. future: deconstructors etc
+  n.typ in {ekIdentifier, ekVariableDeclarator} #es5: only identifier matchs pattern. future: deconstructors etc
 
 proc isBinaryOp*(op:string):bool = 
   op in ["==", "!=", "===", "!==", "<", "<=", ">", ">=", "<<", ">>", ">>>",
@@ -440,6 +440,13 @@ proc body*(n: ESNode):seq[ESNode] =
   else:
     assert(false, "test wrong node kind: " & $n.typ)
 ]#
+
+proc len*(n: ESNode): int =
+  case n.typ:
+  of ekBlockStatement:
+    result = len(n.bbody)
+  else:
+    assert(false, "len body wrong node kind: " & $n.typ)
 
 proc body*(n: ESNode):ESNode =
   case n.typ:

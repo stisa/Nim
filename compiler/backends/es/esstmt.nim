@@ -148,7 +148,7 @@ proc newVarDecl*(kind:ESVarKind, exported: bool, decls:openArray[ESNode],loc:Sou
   result.vdeclarations = @decls
 
 proc newVarDeclarator*(id, init:ESNode, loc:SourceLocation=nil):ESNode =
-  assert id.isPattern, $id.typ
+  # FIXME: assert id.isPattern, $id.typ
   
   result = newESNode(ekVariableDeclarator,loc)
   result.vid = id
@@ -176,6 +176,8 @@ proc newObjTypeDecl*(name: ESNode, exp:bool, fields: varargs[ESNode]): ESNode =
   #     this.model = model;
   #     this.year = year;
   # }
+
+  #TODO: what about reccase obj
   
   #TODO: assert isident...
 
@@ -192,4 +194,5 @@ proc newObjTypeDecl*(name: ESNode, exp:bool, fields: varargs[ESNode]): ESNode =
     fields,
     exp
   )
+
 

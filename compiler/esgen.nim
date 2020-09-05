@@ -69,8 +69,8 @@ type
 proc hasProc(b: ESBackend, s: PSym): bool =
   b.generatedProcs.contains(s.id)
 
-proc hasTypeInfo(b: ESBackend, s: PSym): bool =
-  b.generatedTypeInfos.contains(s.id)
+proc hasTypeInfo(b: ESBackend, t: PType): bool =
+  b.generatedTypeInfos.contains(t.sym.id)
 
 proc newBackend(): ESBackend =
   new(result)
@@ -211,6 +211,22 @@ proc makeJSString(s: string, escapeNonAscii = true): string =
     result = escapeJSString(s)
 
 proc gen(es: ESGen, n: PNode, piece: var ESNode, loc: SourceLocation = nil): ESNode
+
+
+proc genNilLit(es: ESGen, typ: PType): ESNode = 
+  if isEmptyType(typ):
+    discard
+  elif mapType(typ) == etyBaseIndex:
+    result = newArrayExpr([newESEmitExpr("null")])
+  elif mapType(typ) in {etyInt, etyFloat}:
+    result = newESLiteral(0)
+  elif mapType(typ) in {etyFloat}:
+    result = newESLiteral(0.0)
+  elif mapType(typ) == etyBool:
+    result = newESLiteral(false)
+  else:
+    result = newESEmitExpr("null")
+
 
 #[
 proc genTypeInfo(p: PProc, typ: PType): Rope
@@ -1944,48 +1960,52 @@ proc genCast(p: PProc, n: PNode, r: var TCompRes) =
     r.typ = etyObject
 ]#
 
+proc genSym(es: ESGen, s: PSym, noDeref = false): ESNode =
+  if s.loc.storage == OnHeap and not noDeref:
+    result = newMemberExpr(
+      newESIdent(s.name.s, s.typ.typeToString), 
+      newESLiteral(0), false
+    )
+  else:
+    result = newESIdent(s.name.s, s.typ.typeToString)
+
 proc genProc(es: ESGen, prc: PSym) =
-  let ressym = if prc.ast.len > resultPos :prc.ast[resultPos] else: nil
+  let res = if prc.ast.len > resultPos :prc.ast[resultPos] else: nil
   var bdy = newBlockStmt()
-  if not ressym.isNil:
+  if not res.isNil:
+    res.sym.loc.storage = OnHeap
     bdy.add(
       newVarDecl(esLet, false,
         [newVarDeclarator(
-          newESIdent("result", ressym.typ.typeToString),    
-          if mapType(ressym.typ) == etyBaseIndex:
-            newArrayExpr([newArrayExpr([newESEmitExpr("null")])])
-          else: newArrayExpr([newESEmitExpr("null")])
+          newESIdent("result", res.typ.typeToString), newArrayExpr([es.genNilLit(res.typ)])
         )]
       )
     )
+  
   var tmpbody = es.gen(transformBody(es.graph, prc, false), bdy)
   bdy.add(tmpbody)
-  if not ressym.isNil:
+  if not res.isNil:
     #if ressym.typ.kind == tyVar:
-      bdy.add(
-        newReturnStmt(newESIdent("result"))
-      )
+      # bdy.add(
+      #   newReturnStmt(es.genSym(ressym, noDeref=true))
+      # )
     #else:
-    #  bdy.add(
-    #    newReturnStmt(newMemberExpr(newESIdent("result"), newESLiteral(0), false))
-    #  )
-  let declparams = prc.ast[paramsPos]
+      bdy.add(
+        newReturnStmt(es.genSym(res.sym))
+      )
+  let declparams = prc.typ.n
   var params = newSeq[ESNode](declparams.len-1)
-  #echo es.config.treeToYaml(declparams)
+  echo es.config.treeToYaml(prc.typ.n)
   for i, p in declparams:
-    echo i
     if i == 0: continue
-    var tname: string
-    if not p[1].isNil and p[1].kind == nkSym: tname = p[1].sym.name.s
-    elif not p[2].isNil and not p[2].typ.isNil: tname = p[2].typ.typeToString
+    if p.sym.ast.isNil:
+      params[i-1] = newESIdent(p.sym.name.s, p.sym.typ.typeToString)
     else:
-      echo es.config.treeToYaml(p)
-      es.config.internalError("param has no type: " & p[0].ident.s)
-    params[i-1] = newESIdent(p[0].ident.s, tname)
+      params[i-1] = newVarDeclarator(newESIdent(p.sym.name.s, p.sym.typ.typeToString), es.gen(p.sym.ast, bdy)) #body is wrong? 
 
   ESBackend(es.graph.backend).ast.add(
     newESFuncDecl(
-      newESIdent(prc.name.s, if ressym.isNil: "" else: ressym.typ.typeToString),
+      newESIdent(prc.name.s, if res.isNil: "" else: res.typ.typeToString),
       bdy,
       params,
       card(prc.flags*{sfExported, sfExportc}) > 0
@@ -2443,10 +2463,9 @@ proc genMagic(p: PProc, n: PNode, r: var TCompRes) =
 ]#
 
 proc genMagicCall(es: ESGen, n: PNode, piece: var ESNode, loc: SourceLocation = nil) : ESNode=
-  es.config.internalError("TODO: genMagicCall")
+  es.config.internalError("TODO: genMagicCall" & n[0].sym.name.s & $n[0].sym.magic)
   if not es.graph.backend.ESBackend.generatedProcs.containsOrIncl(n[0].sym.id):
     es.genProc(n[0].sym)
-
 
 proc genCall(es: ESGen, n: PNode, piece: var ESNode, loc: SourceLocation = nil) : ESNode=
   if not es.graph.backend.ESBackend.generatedProcs.containsOrIncl(n[0].sym.id):
@@ -2463,6 +2482,29 @@ proc genAsgn(es: ESGen, lhs, rhs: PNode, piece: var ESNode, loc: SourceLocation 
   result = newExpressionStmt(
     newAsgnExpr("=", es.gen(lhs, piece), es.gen(rhs, piece))
   )
+
+proc genObjTypeInfo(es: ESGen, t: PType, piece: var ESNode, loc: SourceLocation = nil) : ESNode=
+  # https://nim-lang.org/docs/macros.html#statements-type-section
+  var fields : seq[ESNode] = @[]
+  for i, reclst in t.n:
+    #echo es.config.treeToYaml(reclst)
+    fields.add(es.gen(reclst, piece))
+  newObjTypeDecl(newESIdent(t.sym.name.s), false #[TODO:]#, fields)
+
+proc genObjConstrCall(es: ESGen, n: PNode, piece: var ESNode, loc: SourceLocation = nil) : ESNode=
+  if not es.graph.backend.ESBackend.generatedTypeInfos.containsOrIncl(n.typ.sym.id):
+      piece.add(es.genObjTypeInfo(n.typ, piece))
+    
+  #echo es.config.treeToYaml(n)
+  var args = newSeq[ESNode]()
+  for i, arg in n:
+    # arg is exprcolonexpr, don't care about name tho
+    if i == 0: continue
+    args.add(es.gen(arg[1], piece))
+  result = newNewExpr(
+    newESIdent(n[0].sym.name.s), args
+  )
+
 proc gen(es: ESGen, n: PNode, piece: var ESNode, loc: SourceLocation = nil): ESNode =
   let conf = es.config
   let b = ESBackend(es.graph.backend)
@@ -2475,19 +2517,14 @@ proc gen(es: ESGen, n: PNode, piece: var ESNode, loc: SourceLocation = nil): ESN
   case n.kind:
   of nkGenSkippedKinds: result = newEmptyStmt() # returns ';'
   of nkSym:
-    result = newESIdent(n.sym.name.s, n.sym.typ.typeToString)
+    result = es.genSym(n.sym)
   of nkCharLit..nkUInt64Lit:
     if n.typ.kind == tyBool:
       result = newESLiteral(n.intVal != 0)
     else:
       result = newESLiteral(n.intVal)
   of nkNilLit:
-    if isEmptyType(n.typ):
-      discard
-    elif mapType(n.typ) == etyBaseIndex:
-      result = newArrayExpr([newESEmitExpr("null")])
-    else:
-      result = newESEmitExpr("null")
+    result = es.genNilLit(n.typ)
   of nkStrLit..nkTripleStrLit:
     result = newESLiteral(n.strVal)
   of nkFloatLit..nkFloat64Lit:
@@ -2503,10 +2540,11 @@ proc gen(es: ESGen, n: PNode, piece: var ESNode, loc: SourceLocation = nil): ESN
     result = newBlockStmt()
     # TODO: if v[2] is nkCallKind no need for brackets, the returned result is already a var
     for v in n.sons:
+      v[0].sym.loc.storage = OnHeap #TODO: proper fix later on...
       result.add(
         newVarDecl(
           esLet, v[0].sym.exportOrUsed,
-          [newVarDeclarator(es.gen(v[0], piece), newArrayExpr([es.gen(v[2], piece)]))]
+          [newVarDeclarator(newESIdent(v[0].sym.name.s, v[0].sym.typ.typeToString), newArrayExpr([es.gen(v[2], piece)]))]
         )
       )
   of nkLetSection:
@@ -2515,7 +2553,7 @@ proc gen(es: ESGen, n: PNode, piece: var ESNode, loc: SourceLocation = nil): ESN
       result.add(
         newVarDecl(
           esConst, v[0].sym.exportOrUsed,
-          [newVarDeclarator(es.gen(v[0], piece), es.gen(v[2], piece))]
+          [newVarDeclarator(newESIdent(v[0].sym.name.s, v[0].sym.typ.typeToString), es.gen(v[2], piece))]
         )
       )
   of nkAsgn:
@@ -2543,6 +2581,41 @@ proc gen(es: ESGen, n: PNode, piece: var ESNode, loc: SourceLocation = nil): ESN
     result = newLabeledStmt(
       newESIdent(n[0].sym.name.s.mangle),
       es.gen(n[1], piece)
+    )
+  of nkConstSection: 
+    result = newBlockStmt()
+    for c in n.sons:
+      if c[0].sym.exportOrUsed:
+        result.add(
+          newVarDecl(
+            esConst, c[0].sym.exportOrUsed,
+            [newVarDeclarator(newESIdent(c[0].sym.name.s, c[0].sym.typ.typeToString), es.gen(c[2], piece))]
+          )
+        )
+    if result.len == 0:
+      result = newEmptyStmt()
+  of nkObjConstr:
+    if n.typ.isNil: es.config.internalError("Empty type for nkobjconstr")
+    result = es.genObjConstrCall(n, piece)
+  of nkAddr, nkHiddenAddr:
+    if n[0].kind == nkSym:
+      result = newArrayExpr([
+        es.genSym(n[0].sym, noDeref=true), newESLiteral(0)
+      ])
+    else:
+      result = newArrayExpr([
+        es.gen(n[0], piece), newESLiteral(0)
+      ])
+  of nkDerefExpr, nkHiddenDeref:
+    let ident = es.gen(n[0], piece)
+    result = newMemberExpr(
+      newMemberExpr(ident, newESLiteral(0), false),
+      newMemberExpr(ident, newESLiteral(1), false),
+      false
+    )
+  of nkDotExpr:
+    result = newMemberExpr(
+      es.gen(n[0],piece), es.gen(n[1],piece), true
     )
   else: internalError(es.config, "gen: unknown node type: " & $n.kind)
 
@@ -2572,9 +2645,6 @@ proc gen(es: ESGen, n: PNode, piece: var ESNode, loc: SourceLocation = nil): ESN
   of nkStmtList, nkStmtListExpr
   of nkBlockStmt, nkBlockExpr:
   of nkIfStmt, nkIfExpr:
-  of nkWhileStmt:
-  of nkVarSection, nkLetSection:
-  of nkConstSection:
   of nkCaseStmt:
   of nkReturnStmt:
   of nkBreakStmt:
@@ -2625,4 +2695,5 @@ const ESgenPass* = makePass(myOpen, myProcess, myClose)
 #[
   http://esprima.org/demo/parse.html
   https://nim-lang.org/docs/macros.html
+  TODO: used/exported mainmodule procdef should be generated
 ]#
