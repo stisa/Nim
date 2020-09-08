@@ -61,6 +61,7 @@ type
     ekImport
 
     # --v-- Non standard --v--
+    ekRawStr
     ekStrLit
     ekBoolLit
     ekNullLit
@@ -236,10 +237,12 @@ type
       args*: seq[ESNode]
     of ekSequenceExpression:
       expressions*: seq[ESNode] # expression
+    of ekRawStr:
+      rawstr*: string
 
 # These procs are used in place of interfaces
 proc isLiteral*(n:ESNode):bool =
-  n.typ in {ekBoolLit,ekFloatLit,ekIntLit,ekStrLit,ekNullLit,ekRegExpLiteral}
+  n.typ in {ekBoolLit,ekFloatLit,ekIntLit,ekStrLit, ekRawStr, ekNullLit,ekRegExpLiteral}
 
 proc isExpression*(n:ESNode):bool =
   n.typ in {ekIdentifier, ekThisExpression, ekArrayExpression, ekObjectExpression,
@@ -302,7 +305,9 @@ proc `value=`*(prop: var ESNode, val: ESNode) =
     prop.strval = val
   else:
     echo "value= error"
+
 proc value*(prop: ESNode): ESNode = prop.pvalue
+
 proc `argument=`*(n: var ESNode, val:ESNode) =
   case n.typ:
   of ekReturnStatement: n.rargument = val
@@ -537,3 +542,7 @@ proc newESFuncDecl*(id,body:ESNode, params:openArray[ESNode], exp: bool=false, l
 proc newESEmitExpr*(code:string, loc:SourceLocation=nil):ESNode =
   result = newESNode(ekEmit, loc)
   result.code = code
+
+proc newESRawStr*(str: string, loc: SourceLocation=nil): ESNode =
+  result = newESNode(ekRawStr, loc)
+  result.rawstr = str

@@ -276,6 +276,9 @@ proc renderSeqExpr(s:ESNode, indlvl=0):string =
     if i!=s.expressions.len-1:
       add result, ","
 
+proc renderRawStr(en: ESNode, indlvl=0): string =
+  result = "\"" & en.rawstr & "\""
+
 proc render*(en:ESNode, indlvl=0):string =
   if en.isNil: 
     when defined debug:
@@ -376,6 +379,8 @@ proc render*(en:ESNode, indlvl=0):string =
     add result, renderMemberCallExpr(en, indlvl)
   of ekDefaultCase:
     add result, renderDefaultCase(en, indlvl)
+  of ekRawStr:
+    add result, renderRawStr(en, indlvl)
   
 proc renderAndClean*(esn:ESNode):string =
   result = render(esn)

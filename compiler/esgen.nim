@@ -37,7 +37,7 @@ import
   cgmeth, lowerings, sighashes, pathutils,
   lineinfos, rodutils, transf, injectdestructors, sourcemap
 
-import strutils, intsets
+import strutils, intsets, tables
 #from math import classify
 
 from modulegraphs import ModuleGraph, PPassContext
@@ -55,7 +55,7 @@ type
     ast: ESNode
     generatedProcs: IntSet
     generatedTypeInfos: IntSet
-    tmpcounter: int
+    sigConflicts: CountTable[string]
 
   ESTypeKind = enum       # necessary JS "types"
     etyNone,                  # no type
@@ -86,6 +86,7 @@ proc newBackend(): ESBackend =
   result.ast = newESModule(":codegen-temp-module")
   result.generatedProcs = initIntSet()
   result.generatedTypeInfos = initIntSet()
+  result.sigConflicts = initCountTable[string]()
 
 proc updateBackendName(b: ESBackend, name:string) = b.ast.mname = name
 
@@ -151,7 +152,7 @@ proc mapType(typ: PType): ESTypeKind =
   of tyCString: result = etyString
   of tyOptDeprecated: doAssert false
 
-proc mangleName(s: PSym): string =
+proc mangleName(es: ESGen, s: PSym): string =
   proc validJsName(name: string): bool =
     result = true
     const reservedWords = ["abstract", "await", "boolean", "break", "byte",
@@ -189,7 +190,8 @@ proc mangleName(s: PSym): string =
           x.add("HEX" & toHex(ord(c), 2))
         inc i
       result = x
-  
+  # disambiguation may be needed for procs
+  result &= "_" & $s.id
 
 proc escapeJSString(s: string): string =
   result = newStringOfCap(s.len + s.len shr 2)
@@ -232,13 +234,13 @@ proc genNilLit(es: ESGen, typ: PType): ESNode =
 
 proc genSym(es: ESGen, s: PSym, noDeref = false): ESNode =
   if s.loc.storage == OnHeap and not noDeref:
-    echo s.mangleName, " ",s.typ.kind
+    echo es.mangleName(s), " ",s.typ.kind
     result = newMemberExpr(
-      newESIdent(s.mangleName, s.typ.typeToString), 
+      newESIdent(es.mangleName(s), s.typ.typeToString), 
       newESLiteral(0), false
     )
   else:
-    result = newESIdent(s.mangleName, s.typ.typeToString)
+    result = newESIdent(es.mangleName(s), s.typ.typeToString)
 
 proc genProc(es: ESGen, prc: PSym) =
   let res = if prc.ast.len > resultPos :prc.ast[resultPos] else: nil
@@ -248,7 +250,7 @@ proc genProc(es: ESGen, prc: PSym) =
     bdy.add(
       newVarDecl(esLet, false,
         [newVarDeclarator(
-          newESIdent("result", res.typ.typeToString), newArrayExpr([es.genNilLit(res.typ)])
+          newESIdent(es.mangleName(res.sym), res.typ.typeToString), newArrayExpr([es.genNilLit(res.typ)])
         )]
       )
     )
@@ -275,26 +277,27 @@ proc genProc(es: ESGen, prc: PSym) =
   for i, p in declparams:
     if i == 0: continue
     if p.sym.ast.isNil:
-      params[i-1] = newESIdent(p.sym.mangleName, p.sym.typ.typeToString)
+      params[i-1] = newESIdent(mangleName(es, p.sym), p.sym.typ.typeToString)
     else:
-      params[i-1] = newVarDeclarator(newESIdent(p.sym.mangleName, p.sym.typ.typeToString), es.gen(p.sym.ast, bdy)) #body is wrong? 
+      params[i-1] = newVarDeclarator(newESIdent(mangleName(es, p.sym), p.sym.typ.typeToString), es.gen(p.sym.ast, bdy)) #body is wrong? 
 
-  ESBackend(es.graph.backend).ast.add(
+  ESBackend(es.graph.backend).ast.add( #CHECK:ME can I use stmntbody
     newESFuncDecl(
-      newESIdent(prc.mangleName, if res.isNil: "" else: res.typ.typeToString),
+      newESIdent(mangleName(es, prc), if res.isNil: "" else: res.typ.typeToString),
       bdy,
       params,
       card(prc.flags*{sfExported, sfExportc}) > 0
     )
   )
 
-proc prepareMagic(es: ESGen, name: string) =
+proc prepareMagic(es: ESGen, name: string): ESNode =
   if name.len == 0: es.translError("empty compiler magic name")
   var s = magicsys.getCompilerProc(es.graph, name)
   if s != nil:
     internalAssert es.config, s.kind in {skProc, skFunc, skMethod, skConverter}
     if not ESBackend(es.graph.backend).generatedProcs.containsOrIncl(s.id):
       genProc(es, s)
+    result = newESIdent(es.mangleName(s))
   else:
     es.translError("system module needs: " & name)
     
@@ -387,7 +390,7 @@ proc genCall(es: ESGen, n: PNode, stmntbody: var ESNode, loc: SourceLocation = n
     if i == 0: continue
     args.add(es.gen(arg, stmntbody))
   result = newCallExpr(
-    newESIdent(n[0].sym.mangleName), args
+    newESIdent(mangleName(es, n[0].sym)), args
   )
 
 proc genEcho(es: ESGen, n: PNode, stmntbody: var ESNode): ESNode =
@@ -395,7 +398,7 @@ proc genEcho(es: ESGen, n: PNode, stmntbody: var ESNode): ESNode =
   let args = n[1].skipConv
   internalAssert es.config, args.kind == nkBracket
 
-  es.prepareMagic("esNimStrToJsStr")
+  let magicESId = es.prepareMagic("esNimStrToJsStr")
 
   var esargs: seq[ESNode] = @[]
   for i in 0..<args.len:
@@ -403,7 +406,7 @@ proc genEcho(es: ESGen, n: PNode, stmntbody: var ESNode): ESNode =
     if it.typ.isCompileTimeOnly: continue
     #echo es.config.treeToYaml(it)
     esargs.add(
-      newCallExpr(newESIdent("esNimStrToJsStr"), es.gen(it, stmntbody))
+      newCallExpr(magicESId, es.gen(it, stmntbody))
     )
   
   result = newMemberCallExpr(newESIdent("console"), newESIdent("log"), 
@@ -414,16 +417,12 @@ proc genEcho(es: ESGen, n: PNode, stmntbody: var ESNode): ESNode =
     
   
 proc genMagicCall(es: ESGen, n: PNode, stmntbody: var ESNode, loc: SourceLocation = nil) : ESNode=
-  if not es.graph.backend.ESBackend.generatedProcs.containsOrIncl(n[0].sym.id):
-    #es.config.internalError("Unprepared magic call to " & n[0].sym.name.s)
-    es.prepareMagic(magicToProc(n[0].sym.magic))
+  let esid = es.prepareMagic(magicToProc(n[0].sym.magic))
   var args = newSeq[ESNode]()
   for i, arg in n:
     if i == 0: continue
     args.add(es.gen(arg, stmntbody))
-  result = newCallExpr(
-    newESIdent(magicToProc(n[0].sym.magic)), args
-  )
+  result = newCallExpr(esid, args)
 
 proc genMagic(es: ESGen, n: PNode, stmntbody: var ESNode, loc: SourceLocation = nil) : ESNode=
   #es.config.internalError("TODO: genMagicCall" & n[0].sym.name.s & $n[0].sym.magic)
@@ -722,11 +721,20 @@ proc genObjConstrCall(es: ESGen, n: PNode, stmntbody: var ESNode, loc: SourceLoc
 
 proc genTupleConstr(es: ESGen, n: PNode, stmntbody: var ESNode, loc: SourceLocation = nil): ESNode =
   ## var x = (x:1,x:2)
-  ## -
+  ## let y = (1,2)
+  ## becomes
   ## let x = [{"0":1,"1":2}]
+  ## const y = {"0":1,"1":2}
+  echo es.config.treeToYaml(n)
   var props = newSeq[ESNode]()
-  for i, p in n:
-    props.add(newProperty(newESIdent($i), es.gen(p[1],stmntbody)))
+  if n[0].kind == nkExprColonExpr: # a named tuple
+    for i, p in n:
+      props.add(newProperty(es.gen(p[0], stmntbody), es.gen(p[1],stmntbody)))
+      # TODO: avoid duplacting fields
+      props.add(newProperty(newESIdent($i), es.gen(p[1],stmntbody)))
+  else:
+    for i, p in n:
+      props.add(newProperty(newESIdent($i), es.gen(p,stmntbody)))
   result = newObjectExpr(props)
 
 proc genOfBranch(es: ESGen, n: PNode, stmntbody: var ESNode, loc: SourceLocation= nil): seq[ESNode] =
@@ -777,13 +785,28 @@ proc genDeaultBranch(es: ESGen, n: PNode, stmntbody: var ESNode, loc: SourceLoca
   result = newDefaultCase([es.gen(n[0], stmntbody)])
 
 proc genCaseStmt(es: ESGen, n: PNode, stmntbody: var ESNode, loc: SourceLocation = nil): ESNode =
-  #echo es.config.treeToYaml(n)
+  ## case k:
+  ## of 1: echo k
+  ## of 2..5: echo k+1
+  ## else: echo 0
+  ## becomes:
+  ## switch(k){
+  ##   case(1)
+  ##   console.log(k);
+  ##   break;
+  ##   case(2)
+  ##   case(3)
+  ##   case(4)
+  ##   case(5)
+  ##   console.log(k+1);
+  ##   break;
+  ##   
   var clauses = newSeq[ESNode]()
   var cond: ESNode
   var def : ESNode = newEmptyStmt()
   for i, cl in n:
-    echo cl.kind
-    if cl.kind == nkSym: cond = es.gen(cl, stmntbody) # cond
+    #echo cl.kind
+    if i == 0: cond = es.gen(cl, stmntbody) # cond
     elif cl.kind == nkOfBranch:
       if cl.len == 2:
         clauses.add(es.genOfBranch(cl, stmntbody))
@@ -815,6 +838,7 @@ proc genLit(es: ESGen, n: PNode, stmntbody: var ESNode, loc: SourceLocation = ni
 
 
 proc genCallOrMagic(es: ESGen, n: PNode, stmntbody: var ESNode, loc: SourceLocation = nil): ESNode =
+  echo "SYMID: ", n[0].sym.id, " name ", mangleName(es, n[0].sym)
   if (n[0].kind == nkSym) and (n[0].sym.magic != mNone):
     if isEmptyType(n.typ):  # a magic call stmt
       result = newExpressionStmt(genMagic(es, n, stmntbody))
@@ -833,14 +857,14 @@ proc genVar(es: ESGen, n: PNode, stmntbody: var ESNode, loc: SourceLocation = ni
       result.add(
         newVarDecl(
           esLet, v[0].sym.exportOrUsed and v[0].sym.owner.kind == skModule,
-          [newVarDeclarator(newESIdent(v[0].sym.mangleName, v[0].sym.typ.typeToString), newArrayExpr([ es.genNilLit(v[0].sym.typ) ]))]
+          [newVarDeclarator(newESIdent(mangleName(es,v[0].sym), v[0].sym.typ.typeToString), newArrayExpr([ es.genNilLit(v[0].sym.typ) ]))]
         )
       )
     else:
       result.add(
         newVarDecl(
           esLet, v[0].sym.exportOrUsed and v[0].sym.owner.kind == skModule,
-          [newVarDeclarator(newESIdent(v[0].sym.mangleName, v[0].sym.typ.typeToString), newArrayExpr([es.gen(v[2], stmntbody)]))]
+          [newVarDeclarator(newESIdent(mangleName(es, v[0].sym), v[0].sym.typ.typeToString), newArrayExpr([es.gen(v[2], stmntbody)]))]
         )
       )
 proc genLet(es: ESGen, n: PNode, stmntbody: var ESNode, loc: SourceLocation = nil): ESNode =
@@ -849,7 +873,7 @@ proc genLet(es: ESGen, n: PNode, stmntbody: var ESNode, loc: SourceLocation = ni
     result.add(
       newVarDecl(
         esConst, v[0].sym.exportOrUsed and v[0].sym.owner.kind == skModule,
-        [newVarDeclarator(newESIdent(v[0].sym.mangleName, v[0].sym.typ.typeToString), es.gen(v[2], stmntbody))]
+        [newVarDeclarator(newESIdent(mangleName(es, v[0].sym), v[0].sym.typ.typeToString), es.gen(v[2], stmntbody))]
       )
     )
 
@@ -899,7 +923,7 @@ proc genWhileLoopStmt(es: ESGen, n: PNode, stmntbody: var ESNode, loc: SourceLoc
 
 proc genBlockStmt(es: ESGen, n: PNode, stmntbody: var ESNode, loc: SourceLocation = nil): ESNode =
   result = newLabeledStmt(
-    newESIdent(n[0].sym.mangleName & $n[0].sym.id),
+    newESIdent(mangleName(es, n[0].sym) & $n[0].sym.id),
     es.gen(n[1], stmntbody)
   )
 
@@ -910,7 +934,7 @@ proc genConst(es: ESGen, n: PNode, stmntbody: var ESNode, loc: SourceLocation = 
       result.add(
         newVarDecl(
           esConst, c[0].sym.exportOrUsed and c[0].sym.owner.kind == skModule,
-          [newVarDeclarator(newESIdent(c[0].sym.mangleName, c[0].sym.typ.typeToString), es.gen(c[2], stmntbody))]
+          [newVarDeclarator(newESIdent(mangleName(es, c[0].sym), c[0].sym.typ.typeToString), es.gen(c[2], stmntbody))]
         )
       )
   if result.len == 0:
@@ -968,7 +992,7 @@ proc genPragma(es: ESGen, n: PNode, stmntbody: var ESNode, loc: SourceLocation =
       elif el.kind == nkIdent: 
         emitstr.add(el.ident.s) # TODO: mangling?
       elif el.kind == nkSym:
-        emitstr.add(el.sym.mangleName)
+        emitstr.add(mangleName(es, el.sym))
       else: discard
     result = newESEmitExpr(emitstr)
   else: 
@@ -983,17 +1007,17 @@ proc genAsm(es: ESGen, n: PNode, stmntbody: var ESNode, loc: SourceLocation = ni
     elif el.kind == nkIdent: 
       emitstr.add(el.ident.s) # TODO: mangling?
     elif el.kind == nkSym:
-      emitstr.add(el.sym.mangleName)
+      emitstr.add(mangleName(es, el.sym))
     else: discard
   result = newESEmitExpr(emitstr)
 
 proc genRaise(es: ESGen, n: PNode, stmntbody: var ESNode, loc: SourceLocation = nil): ESNode =
-  es.prepareMagic("raiseException")
-  result = newCallExpr(newESIdent("raiseException"), es.gen(n[0],stmntbody))
+  let id = es.prepareMagic("raiseException")
+  result = newCallExpr(id, es.gen(n[0],stmntbody))
 
 proc genStringToCString(es: ESGen, n: PNode, stmntbody: var ESNode, loc: SourceLocation = nil): ESNode =
-  es.prepareMagic("esNimStrToJsStr")
-  result = newCallExpr(newESIdent("esNimStrToJsStr"), es.gen(n[0],stmntbody))
+  let id = es.prepareMagic("esNimStrToJsStr")
+  result = newCallExpr(id, es.gen(n[0],stmntbody))
 
 proc genReturnStmt(es: ESGen, n: PNode, stmntbody: var ESNode, loc: SourceLocation = nil): ESNode =
   result = newReturnStmt(es.gen(n[1], stmntbody))

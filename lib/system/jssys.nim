@@ -42,16 +42,19 @@ var
 {.push stacktrace: off, profiler:off.}
 
 when defined es:
+  # can't have generic procs here as those don't generate a symbol but 
+  # an ident when going through emit
+  # the [0] is because var in js are boxed in arrays: [val]
   proc esNimStrLit(c: cstring): string {.compilerproc, asmNoStackFrame.} =
-    {.emit: ["return (new TextEncoder).encode(",c,")"].}
+    {.emit: [result, "[0] = (new TextEncoder).encode(", c, ")"].}
   proc esNimStrToJsStr(c: string): cstring {.compilerproc, asmNoStackFrame.} =
-    {.emit: ["result[0] = (new TextDecoder).decode(new Uint8Array(",c,"))"].}
+    {.emit: [result, "[0] = (new TextDecoder).decode(new Uint8Array(", c, "))"].}
   proc esNewString(len: int): string {.asmNoStackFrame, compilerproc.} =
-    {.emit: ["return new Uint8Array(",len,");"].}
-  proc esNimFloatToNimStr(num: SomeFloat): string {.asmNoStackFrame, compilerproc.} =
+    {.emit: [result,"[0] = new Uint8Array(",len,");"].}
+  proc esNimFloatToNimStr(num: float): string {.asmNoStackFrame, compilerproc.} =
     {.emit: ["if (Number.isInteger(", num,")) {\n  return (new TextEncoder).encode(",num," + '.0');\n} else {\n  return (new TextEncoder).encode(",num,".toString());\n}"].} #" this comment fixes syntax highlighting
-  proc esNimIntToNimStr(num: SomeInteger): string {.asmNoStackFrame, compilerproc.} =
-    {.emit: ["return (new TextEncoder).encode(", num, ".toString());"].}
+  proc esNimIntToNimStr(num: int): string {.asmNoStackFrame, compilerproc.} =
+    {.emit: [result,"[0] = (new TextEncoder).encode(", num, ".toString());"].}
   proc esAppendArrArr[T](x: var openArray[T], y:openArray[T]) {.asmNoStackFrame, compilerproc.} =
     {.emit: [ x," = [...", x ,", ...", y, "];" ].}
 
