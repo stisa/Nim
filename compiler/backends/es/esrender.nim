@@ -111,27 +111,37 @@ proc renderContinueStmt(s:ESNode):string =
     add result, render(s.blabel)
   add result, ";"
 
-proc renderIfStmt(i:ESNode):string =
-  result = "if ( $1 ) {\n $2 \n}" % [ render(i.test), render(i.iconsequent)]
+proc renderIfStmt(i:ESNode, indlvl=0):string =
+  result = "if ( $1 ) {\n$2\n}" % [ render(i.test), render(i.iconsequent).indent(indlvl+2)]
   if not i.ialternate.isNil:
     if i.ialternate.typ != ekIfStatement:
       #just the else
-      add result, " else {\n $1 \n}" % [render(i.ialternate)]
+      if i.ialternate.typ != ekEmptyStatement:
+        add result, " else {\n$1\n}" % [render(i.ialternate).indent(indlvl+2)]
     else:
-      add result, " else $1 " % [render(i.ialternate)]
+      add result, " else $1 " % [render(i.ialternate).indent(indlvl+2)]
 
 proc renderSwitchStmt(s:ESNode):string =
-  result = "switch ($1) {" % [render(s.sdiscriminant)]
+  result = "switch ($1) {\n" % [render(s.sdiscriminant)]
   for c in s.scases:
     add result, render(c)
-  add result, "}"
+  add result, "\n}"
 
 proc renderSwitchCase(c:ESNode):string =
   result = "case ($1):\n" % [render(c.test)]
-  for s in c.sconsequent:
-    add result, render(s)
-    add result, "\nbreak;"
+  if not c.sfall: 
+    for s in c.sconsequent:
+      add result, render(s)
+      add result, "\nbreak;\n"
 
+proc renderDefaultCase(c:ESNode, indlvl=0):string =
+  result = "default:\n"
+  var tmp = ""
+  for s in c.dconsq:
+    add tmp, render(s)
+  tmp = tmp.indent(indlvl+2)
+  result.add(tmp)
+  
 proc renderThrowStmt(t:ESNode):string = 
   result = "throw $1;" % [render(t.argument)]
 
@@ -200,9 +210,9 @@ proc renderProperty(p:ESNode):string =
 
 proc renderUnaryExpr(u:ESNode):string =
   if u.unprefix:
-    result = "$1 $2" % [u.unoperator, render(u.argument)]
+    result = "$1($2)" % [u.unoperator, render(u.argument)]
   else:
-    result = "$2 $1" % [u.unoperator, render(u.argument)]
+    result = "($2)$1" % [u.unoperator, render(u.argument)]
 
 proc renderUpdateExpr(u:ESNode): string =
   if u.uprefix:
@@ -298,7 +308,7 @@ proc render*(en:ESNode, indlvl=0):string =
   of ekContinueStatement:
     add result, renderContinueStmt(en)
   of ekIfStatement:
-    add result, renderIfStmt(en)
+    add result, renderIfStmt(en, indlvl)
   of ekSwitchStatement:
     add result, renderSwitchStmt(en)
   of ekSwitchCase:
@@ -357,6 +367,8 @@ proc render*(en:ESNode, indlvl=0):string =
     add result, renderExport(en)
   of ekMemberCallExpression:
     add result, renderMemberCallExpr(en)
+  of ekDefaultCase:
+    add result, renderDefaultCase(en, indlvl)
   
 proc renderAndClean*(esn:ESNode):string =
   result = render(esn)

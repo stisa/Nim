@@ -68,6 +68,7 @@ type
     ekFloatLit
     ekEmit # pass js code directly as string
     ekMemberCallExpression
+    ekDefaultCase
   
   ESType* = enum
     etNum,etString,etObj,etArray,etNil,etFunc
@@ -145,9 +146,13 @@ type
     of ekSwitchStatement:
       sdiscriminant*: ESNode # expression
       scases*: seq[ESNode] #switchcase
+      def*: ESNode
+    of ekDefaultCase:
+      dconsq*: seq[ESNode]
     of ekSwitchCase:
       stest: ESNode # expression
       sconsequent*: seq[ESNode] #statement
+      sfall*: bool
     # Exception
     of ekThrowStatement:
       targument: ESNode # expression
@@ -241,7 +246,8 @@ proc isExpression*(n:ESNode):bool =
             ekFunctionExpression, ekUnaryExpression, ekUpdateExpression, 
             ekBinaryExpression, ekAssignmentExpression,ekLogicalExpression,
             ekMemberExpression, ekConditionalExpression, ekCallExpression,
-            ekNewExpression, ekSequenceExpression, ekEmit } or n.isLiteral()
+            ekNewExpression, ekSequenceExpression, ekEmit, 
+            ekMemberCallExpression} or n.isLiteral()
 
 proc isDeclaration*(n:ESNode):bool =
   n.typ in {ekFunctionDeclaration, ekVariableDeclaration}
@@ -272,7 +278,7 @@ proc isLogicalOp*(op:string):bool =
   op in ["&&", "||"]
 
 proc isUnaryOp*(op:string):bool =
-  op in ["-", "+", "!", "~", "typeof", "void", "delete"]
+  op in ["-", "+", "!", "~", "typeof", "void", "delete", "..."]
 
 proc isUpdateOp*(op:string):bool =
   op in ["++", "--"]

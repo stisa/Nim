@@ -95,7 +95,7 @@ proc exportOrUsed(s: PSym): bool =
   )
 
 
-const nkGenSkippedKinds = { nkCommentStmt, nkPragma, nkEmpty, 
+const nkGenSkippedKinds = { nkCommentStmt, nkEmpty, 
                             nkTemplateDef, nkFuncDef, nkProcDef, nkMethodDef, 
                             nkIteratorDef, nkMacroDef, nkIncludeStmt, 
                             nkImportStmt, nkExportStmt, nkExportExceptStmt, 
@@ -142,7 +142,7 @@ proc mapType(typ: PType): ESTypeKind =
   of tyCString: result = etyString
   of tyOptDeprecated: doAssert false
 
-proc mangleName(m: ESGen, s: PSym): Rope =
+proc mangleName(s: PSym): string =
   proc validJsName(name: string): bool =
     result = true
     const reservedWords = ["abstract", "await", "boolean", "break", "byte",
@@ -163,13 +163,12 @@ proc mangleName(m: ESGen, s: PSym): Rope =
     for chr in name:
       if chr notin {'A'..'Z','a'..'z','_','$','0'..'9'}:
         return false
-  result = s.loc.r
-  if result == nil:
-    if s.kind == skField and s.name.s.validJsName:
-      result = rope(s.name.s)
-    elif s.kind == skTemp:
-      result = rope(mangle(s.name.s))
-    else:
+
+  result = s.name.s # TODO cache in loc.r?
+  if not result.validJsName:
+    # common ones:
+    result = result.multiReplace({"=":"eq","+":"plus","-":"minus","*":"star","/":"slash"})
+    if not result.validJsName: # still not valid? fine then
       var x = newStringOfCap(s.name.s.len)
       var i = 0
       while i < s.name.s.len:
@@ -180,12 +179,8 @@ proc mangleName(m: ESGen, s: PSym): Rope =
         else:
           x.add("HEX" & toHex(ord(c), 2))
         inc i
-      result = rope(x)
-    # From ES5 on reserved words can be used as object field names
-    if s.kind != skField:
-        result.add("_")
-        result.add(rope(s.id))
-    s.loc.r = result
+      result = x
+  
 
 proc escapeJSString(s: string): string =
   result = newStringOfCap(s.len + s.len shr 2)
@@ -1962,12 +1957,13 @@ proc genCast(p: PProc, n: PNode, r: var TCompRes) =
 
 proc genSym(es: ESGen, s: PSym, noDeref = false): ESNode =
   if s.loc.storage == OnHeap and not noDeref:
+    echo s.typ.kind
     result = newMemberExpr(
-      newESIdent(s.name.s, s.typ.typeToString), 
+      newESIdent(s.mangleName, s.typ.typeToString), 
       newESLiteral(0), false
     )
   else:
-    result = newESIdent(s.name.s, s.typ.typeToString)
+    result = newESIdent(s.mangleName, s.typ.typeToString)
 
 proc genProc(es: ESGen, prc: PSym) =
   let res = if prc.ast.len > resultPos :prc.ast[resultPos] else: nil
@@ -1995,24 +1991,24 @@ proc genProc(es: ESGen, prc: PSym) =
       )
   let declparams = prc.typ.n
   var params = newSeq[ESNode](declparams.len-1)
-  echo es.config.treeToYaml(prc.typ.n)
+  
   for i, p in declparams:
     if i == 0: continue
     if p.sym.ast.isNil:
-      params[i-1] = newESIdent(p.sym.name.s, p.sym.typ.typeToString)
+      params[i-1] = newESIdent(p.sym.mangleName, p.sym.typ.typeToString)
     else:
-      params[i-1] = newVarDeclarator(newESIdent(p.sym.name.s, p.sym.typ.typeToString), es.gen(p.sym.ast, bdy)) #body is wrong? 
+      params[i-1] = newVarDeclarator(newESIdent(p.sym.mangleName, p.sym.typ.typeToString), es.gen(p.sym.ast, bdy)) #body is wrong? 
 
   ESBackend(es.graph.backend).ast.add(
     newESFuncDecl(
-      newESIdent(prc.name.s, if res.isNil: "" else: res.typ.typeToString),
+      newESIdent(prc.mangleName, if res.isNil: "" else: res.typ.typeToString),
       bdy,
       params,
       card(prc.flags*{sfExported, sfExportc}) > 0
     )
   )
 
-proc useMagic(es: ESGen, name: string, piece: var ESNode) : ESNode=
+proc prepareMagic(es: ESGen, name: string) =
   if name.len == 0: es.config.internalError("empty compiler magic name")
   var s = magicsys.getCompilerProc(es.graph, name)
   if s != nil:
@@ -2038,17 +2034,37 @@ proc isSimpleExpr(n: PNode): bool =
 #   if defineInLocals:
 #     p.locals.add(p.indentLine("var $1;$n" % [result]))
 
-proc genAnd(es: ESGen, a, b: PNode, piece: var ESNode): ESNode =
-  if isSimpleExpr(a) and isSimpleExpr(b):
-    result = newBinaryExpr("&&", es.gen(a, piece), es.gen(b, piece))
+proc genBinaryExpr(es: ESGen, operator: string, n: PNode, piece: var ESNode): ESNode =
+  let a = n[1]
+  let b = n[2]
+  
+  if operator.isLogicalOp:
+    result = newLogicalExpr(operator, es.gen(a, piece), es.gen(b, piece))
   else:
-    es.config.internalError("TODO: genAnd")
+    result = newBinaryExpr(operator, es.gen(a, piece), es.gen(b, piece))
+  if isSimpleExpr(a) and isSimpleExpr(b):
+    echo "TODO: genBinaryExpr complex expr"
+    # echo es.config.treeToYaml(a)
+    # echo es.config.treeToYaml(b)
+    # es.config.internalError("TODO: genBinaryAsgnExpr complex expr")
 
-proc genOr(es: ESGen, a, b: PNode, piece: var ESNode): ESNode =
+proc genBinaryAsgnExpr(es: ESGen, operator: string, n: PNode, piece: var ESNode): ESNode =
+  let a = n[1]
+  let b = n[2]
+  result = newAsgnExpr(operator, es.gen(a, piece), es.gen(b, piece))
   if isSimpleExpr(a) and isSimpleExpr(b):
-    result = newBinaryExpr("||", es.gen(a, piece), es.gen(b, piece))
-  else:
-    es.config.internalError("TODO: genOr")
+    echo "TODO: genBinaryAsgnExpr complex expr"
+    # echo es.config.treeToYaml(a)
+    # echo es.config.treeToYaml(b)
+    # es.config.internalError("TODO: genBinaryAsgnExpr complex expr")
+
+
+proc genUnaryExpr(es: ESGen, operator: string, prefix:bool, n: PNode, piece: var ESNode): ESNode =
+  result = newUnaryExpr(operator, prefix, es.gen(n[1], piece))
+
+  if isSimpleExpr(n[0]):
+    echo "TODO: genUnaryExpr complex expr"
+  # es.config.internalError("TODO: genUnaryExpr complex expr")
 
 
 type
@@ -2114,10 +2130,10 @@ const # magic checked op; magic unchecked op;
     mUnaryMinusF64: ["", ""],
     mCharToStr: ["nimCharToStr", "nimCharToStr"],
     mBoolToStr: ["nimBoolToStr", "nimBoolToStr"],
-    mIntToStr: ["cstrToNimstr", "cstrToNimstr"],
-    mInt64ToStr: ["cstrToNimstr", "cstrToNimstr"],
-    mFloatToStr: ["cstrToNimstr", "cstrToNimstr"],
-    mCStrToStr: ["cstrToNimstr", "cstrToNimstr"],
+    mIntToStr: ["esNimIntToNimStr", "esNimIntToNimStr"],
+    mInt64ToStr: ["esNimIntToNimStr", "esNimIntToNimStr"],
+    mFloatToStr: ["esNimFloatToNimStr", "esNimFloatToNimStr"],
+    mCStrToStr: ["esNimStrToJsStr", "esNimStrToJsStr"],
     mStrToStr: ["", ""]]
 
 proc needsTemp(n: PNode): bool =
@@ -2291,10 +2307,6 @@ proc arithAux(p: PProc, n: PNode, r: var TCompRes, op: TMagic) =
 
 proc arith(p: PProc, n: PNode, r: var TCompRes, op: TMagic) =
   case op
-  of mAddU: binaryUintExpr(p, n, r, "+")
-  of mSubU: binaryUintExpr(p, n, r, "-")
-  of mMulU: binaryUintExpr(p, n, r, "*")
-  of mDivU: binaryUintExpr(p, n, r, "/")
   of mDivI:
     arithAux(p, n, r, op)
   of mModI:
@@ -2320,152 +2332,75 @@ proc arith(p: PProc, n: PNode, r: var TCompRes, op: TMagic) =
     arithAux(p, n, r, op)
   r.kind = resExpr
 
-
-proc genMagic(p: PProc, n: PNode, r: var TCompRes) =
-  var
-    a: TCompRes
-    line, filen: Rope
-  var op = n[0].sym.magic
-  case op
-  of mOr: genOr(p, n[1], n[2], r)
-  of mAnd: genAnd(p, n[1], n[2], r)
-  of mAddI..mStrToStr: arith(p, n, r, op)
-  of mRepr: genRepr(p, n, r)
-  of mSwap: genSwap(p, n)
-  of mAppendStrCh:
-    binaryExpr(p, n, r, "addChar",
-        "addChar($1, $2);")
-  of mAppendStrStr:
-    var lhs, rhs: TCompRes
-    gen(p, n[1], lhs)
-    gen(p, n[2], rhs)
-
-    if skipTypes(n[1].typ, abstractVarRange).kind == tyCString:
-      r.res = "$1 += $2;" % [lhs.rdLoc, rhs.rdLoc]
-    else:
-      let (a, tmp) = maybeMakeTemp(p, n[1], lhs)
-      r.res = "$1.push.apply($3, $2);" % [a, rhs.rdLoc, tmp]
-    r.kind = resExpr
-  of mAppendSeqElem:
-    var x, y: TCompRes
-    gen(p, n[1], x)
-    gen(p, n[2], y)
-    if mapType(n[2].typ) == etyBaseIndex:
-      let c = "[$1, $2]" % [y.address, y.res]
-      r.res = "$1.push($2);" % [x.rdLoc, c]
-    elif needsNoCopy(p, n[2]):
-      r.res = "$1.push($2);" % [x.rdLoc, y.rdLoc]
-    else:
-      useMagic(p, "nimCopy")
-      let c = getTemp(p, defineInLocals=false)
-      lineF(p, "var $1 = nimCopy(null, $2, $3);$n",
-            [c, y.rdLoc, genTypeInfo(p, n[2].typ)])
-      r.res = "$1.push($2);" % [x.rdLoc, c]
-    r.kind = resExpr
-  of mConStrStr:
-    genConStrStr(p, n, r)
-  of mEqStr:
-    binaryExpr(p, n, r, "eqStrings", "eqStrings($1, $2)")
-  of mLeStr:
-    binaryExpr(p, n, r, "cmpStrings", "(cmpStrings($1, $2) <= 0)")
-  of mLtStr:
-    binaryExpr(p, n, r, "cmpStrings", "(cmpStrings($1, $2) < 0)")
-  of mIsNil:
-    # we want to accept undefined, so we ==
-    if mapType(n[1].typ) != etyBaseIndex:
-      unaryExpr(p, n, r, "", "($1 == null)")
-    else:
-      var x: TCompRes
-      gen(p, n[1], x)
-      r.res = "($# == null && $# === 0)" % [x.address, x.res]
-  of mEnumToStr: genRepr(p, n, r)
-  of mNew, mNewFinalize: genNew(p, n)
-  of mChr: gen(p, n[1], r)
-  of mArrToSeq:
-    if needsNoCopy(p, n[1]):
-      gen(p, n[1], r)
-    else:
-      var x: TCompRes
-      gen(p, n[1], x)
-      useMagic(p, "nimCopy")
-      r.res = "nimCopy(null, $1, $2)" % [x.rdLoc, genTypeInfo(p, n.typ)]
-  of mDestroy: discard "ignore calls to the default destructor"
-  of mOrd: genOrd(p, n, r)
-  of mLengthStr, mLengthSeq, mLengthOpenArray, mLengthArray:
-    unaryExpr(p, n, r, "", "($1).length")
-  of mHigh:
-    unaryExpr(p, n, r, "", "(($1).length-1)")
-  of mInc:
-    if n[1].typ.skipTypes(abstractRange).kind in {tyUInt..tyUInt64}:
-      binaryUintExpr(p, n, r, "+", true)
-    else:
-      if optOverflowCheck notin p.options: binaryExpr(p, n, r, "", "$1 += $2")
-      else: binaryExpr(p, n, r, "addInt", "$1 = addInt($3, $2)", true)
-  of ast.mDec:
-    if n[1].typ.skipTypes(abstractRange).kind in {tyUInt..tyUInt64}:
-      binaryUintExpr(p, n, r, "-", true)
-    else:
-      if optOverflowCheck notin p.options: binaryExpr(p, n, r, "", "$1 -= $2")
-      else: binaryExpr(p, n, r, "subInt", "$1 = subInt($3, $2)", true)
-  of mSetLengthStr:
-    binaryExpr(p, n, r, "mnewString", "($1.length = $2)")
-  of mSetLengthSeq:
-    var x, y: TCompRes
-    gen(p, n[1], x)
-    gen(p, n[2], y)
-    let t = skipTypes(n[1].typ, abstractVar)[0]
-    let (a, tmp) = maybeMakeTemp(p, n[1], x)
-    let (b, tmp2) = maybeMakeTemp(p, n[2], y)
-    r.res = """if ($1.length < $2) { for (var i=$4.length;i<$5;++i) $4.push($3); }
-               else { $4.length = $5; }""" % [a, b, createVar(p, t, false), tmp, tmp2]
-    r.kind = resExpr
-  of mCard: unaryExpr(p, n, r, "SetCard", "SetCard($1)")
-  of mLtSet: binaryExpr(p, n, r, "SetLt", "SetLt($1, $2)")
-  of mLeSet: binaryExpr(p, n, r, "SetLe", "SetLe($1, $2)")
-  of mEqSet: binaryExpr(p, n, r, "SetEq", "SetEq($1, $2)")
-  of mMulSet: binaryExpr(p, n, r, "SetMul", "SetMul($1, $2)")
-  of mPlusSet: binaryExpr(p, n, r, "SetPlus", "SetPlus($1, $2)")
-  of mMinusSet: binaryExpr(p, n, r, "SetMinus", "SetMinus($1, $2)")
-  of mIncl: binaryExpr(p, n, r, "", "$1[$2] = true")
-  of mExcl: binaryExpr(p, n, r, "", "delete $1[$2]")
-  of mInSet:
-    binaryExpr(p, n, r, "", "($1[$2] != undefined)")
-  of mNewSeq: genNewSeq(p, n)
-  of mNewSeqOfCap: unaryExpr(p, n, r, "", "[]")
-  of mOf: genOf(p, n, r)
-  of mDefault: genDefault(p, n, r)
-  of mReset, mWasMoved: genReset(p, n)
-  of mEcho: genEcho(p, n, r)
-  of mNLen..mNError, mSlurp, mStaticExec:
-    localError(p.config, n.info, errXMustBeCompileTime % n[0].sym.name.s)
-  of mNewString: unaryExpr(p, n, r, "mnewString", "mnewString($1)")
-  of mNewStringOfCap:
-    unaryExpr(p, n, r, "mnewString", "mnewString(0)")
-  of mDotDot:
-    genProcForSymIfNeeded(p, n[0].sym)
-    genCall(p, n, r)
-  of mParseBiggestFloat:
-    useMagic(p, "nimParseBiggestFloat")
-    genCall(p, n, r)
-  of mSlice:
-    # arr.slice([begin[, end]]): 'end' is exclusive
-    var x, y, z: TCompRes
-    gen(p, n[1], x)
-    gen(p, n[2], y)
-    gen(p, n[3], z)
-    r.res = "($1.slice($2, $3+1))" % [x.rdLoc, y.rdLoc, z.rdLoc]
-    r.kind = resExpr
-  of mMove:
-    genMove(p, n, r)
-  else:
-    genCall(p, n, r)
-    #else internalError(p.config, e.info, 'genMagic: ' + magicToStr[op]);
 ]#
 
-proc genMagicCall(es: ESGen, n: PNode, piece: var ESNode, loc: SourceLocation = nil) : ESNode=
-  es.config.internalError("TODO: genMagicCall" & n[0].sym.name.s & $n[0].sym.magic)
-  if not es.graph.backend.ESBackend.generatedProcs.containsOrIncl(n[0].sym.id):
-    es.genProc(n[0].sym)
+proc magicToProc(magic: TMagic): string =
+  result = case magic:
+  of mAddI: "addInt"
+  of mSubI: "subInt"
+  of mMulI: "mulInt"
+  of mDivI: "divInt"
+  of mModI: "modInt"
+  of mSucc: "addInt"
+  of mPred: "subInt"
+  of mAddF64: ""
+  of mSubF64: ""
+  of mMulF64: ""
+  of mDivF64: ""
+  of mShrI: ""
+  of mShlI: ""
+  of mAshrI: ""
+  of mBitandI: ""
+  of mBitorI: ""
+  of mBitxorI: ""
+  of mMinI: "nimMin"
+  of mMaxI: "nimMax"
+  of mAddU: ""
+  of mSubU: ""
+  of mMulU: ""
+  of mDivU: ""
+  of mModU: ""
+  of mEqI: ""
+  of mLeI: ""
+  of mLtI: ""
+  of mEqF64: ""
+  of mLeF64: ""
+  of mLtF64: ""
+  of mLeU: ""
+  of mLtU: ""
+  of mEqEnum: ""
+  of mLeEnum: ""
+  of mLtEnum: ""
+  of mEqCh: ""
+  of mLeCh: ""
+  of mLtCh: ""
+  of mEqB: ""
+  of mLeB: ""
+  of mLtB: ""
+  of mEqRef: ""
+  of mLePtr: ""
+  of mLtPtr: ""
+  of mXor: ""
+  of mEqCString: ""
+  of mEqProc: ""
+  of mUnaryMinusI: "negInt"
+  of mUnaryMinusI64: "negInt64"
+  of mAbsI: "absInt"
+  of mNot: ""
+  of mUnaryPlusI: ""
+  of mBitnotI: ""
+  of mUnaryPlusF64: ""
+  of mUnaryMinusF64: ""
+  of mCharToStr: "nimCharToStr" 
+  of mBoolToStr: "nimBoolToStr"
+  of mIntToStr: "esNimIntToNimStr"
+  of mInt64ToStr: "esNimIntToNimStr"
+  of mFloatToStr: "esNimFloatToNimStr"
+  of mCStrToStr: "esNimStrToJsStr"
+  of mStrToStr: ""
+  of mNewString: "esNewString"
+  of mAppendStrStr, mAppendStrCh: "esAppendArrArr"
+  else:  ""
 
 proc genCall(es: ESGen, n: PNode, piece: var ESNode, loc: SourceLocation = nil) : ESNode=
   if not es.graph.backend.ESBackend.generatedProcs.containsOrIncl(n[0].sym.id):
@@ -2474,10 +2409,299 @@ proc genCall(es: ESGen, n: PNode, piece: var ESNode, loc: SourceLocation = nil) 
   var args = newSeq[ESNode]()
   for i, arg in n:
     if i == 0: continue
+    echo "C"
+    echo es.config.treeToYaml(arg)
+
     args.add(es.gen(arg, piece))
   result = newCallExpr(
-    newESIdent(n[0].sym.name.s), args
+    newESIdent(n[0].sym.mangleName), args
   )
+
+proc genEcho(es: ESGen, n: PNode, piece: var ESNode): ESNode =
+  #echo es.config.treeToYaml(n[1])
+  let args = n[1].skipConv
+  internalAssert es.config, args.kind == nkBracket
+
+  es.prepareMagic("esNimStrToJsStr")
+
+  var esargs: seq[ESNode] = @[]
+  for i in 0..<args.len:
+    let it = args[i]
+    if it.typ.isCompileTimeOnly: continue
+    #echo es.config.treeToYaml(it)
+    esargs.add(
+      newCallExpr(newESIdent("esNimStrToJsStr"), es.gen(it, piece))
+    )
+  
+  result = newMemberCallExpr(newESIdent("console"), newESIdent("log"), 
+    newMemberCallExpr(newArrayExpr(esargs), newESIdent("join"), newESEmitExpr("''"))
+  ) 
+
+  # # console.log(...arg)
+    
+  
+proc genMagicCall(es: ESGen, n: PNode, piece: var ESNode, loc: SourceLocation = nil) : ESNode=
+  if not es.graph.backend.ESBackend.generatedProcs.containsOrIncl(n[0].sym.id):
+    #es.config.internalError("Unprepared magic call to " & n[0].sym.name.s)
+    es.prepareMagic(magicToProc(n[0].sym.magic))
+  var args = newSeq[ESNode]()
+  for i, arg in n:
+    if i == 0: continue
+    echo "M"
+    echo es.config.treeToYaml(arg)
+    args.add(es.gen(arg, piece))
+  result = newCallExpr(
+    newESIdent(magicToProc(n[0].sym.magic)), args
+  )
+
+proc genMagic(es: ESGen, n: PNode, piece: var ESNode, loc: SourceLocation = nil) : ESNode=
+  #es.config.internalError("TODO: genMagicCall" & n[0].sym.name.s & $n[0].sym.magic)
+
+  let op = n[0].sym.magic
+  case op
+  of mOr: result = genBinaryExpr(es, "||", n, piece)
+  of mAnd: result = genBinaryExpr(es, "&&", n, piece)
+  of mAddU, mAddI: result = genBinaryExpr(es, "+", n, piece)
+  of mSubU, mSubI: result = genBinaryExpr(es, "-", n, piece)
+  of mMulU: result = genBinaryExpr(es, "*", n, piece)
+  of mDivU: result = genBinaryExpr(es, "/", n, piece)
+  of mInc: result = genBinaryAsgnExpr(es, "+=", n, piece)
+  of mSucc: result = genUnaryExpr(es, "--", false, n, piece)
+  of mPred: result = genUnaryExpr(es, "--", false, n, piece)
+  of mDec: result = genBinaryAsgnExpr(es, "-=", n, piece)
+  of mAddF64: result = genBinaryExpr(es, "+", n, piece)
+  of mSubF64: result = genBinaryExpr(es, "-", n, piece)
+  of mMulF64: result = genBinaryExpr(es, "*", n, piece)
+  of mDivF64: result = genBinaryExpr(es, "/", n, piece)
+  of mEqI, mEqF64, mEqEnum, mEqCh, mEqB, mEqRef,
+    mEqCString, mEqProc: result = genBinaryExpr(es, "==", n, piece) 
+  of mLeI, mLeF64, mLeU,mLeEnum,mLeCh,mLeB,mLePtr: result = genBinaryExpr(es, "<=", n, piece) 
+  of mLtI, mLtF64, mLtU,mLtEnum,mLtCh,mLtB,mLtPtr: result = genBinaryExpr(es, "<", n, piece) 
+  of mEcho:
+    result = es.genEcho(n, piece)
+  of mIntToStr, mInt64ToStr, mFloatToStr, mBoolToStr, mCharToStr, mCStrToStr, 
+    mNewString, #[mAppendStrStr,]# mAppendStrCh, mAppendSeqElem: 
+    result = es.genMagicCall(n, piece)
+  of mAppendStrStr: 
+    result = newAsgnExpr("=",
+      es.gen(n[1], piece),
+      newArrayExpr(
+        [
+          newUnaryExpr("...", true, es.gen(n[1], piece)),
+          newUnaryExpr("...", true, es.gen(n[2], piece))
+        ]
+      )
+    )
+  #  of mAppendStrCh, mAppendSeqElem:
+  #    result = newMemberCallExpr(es.gen(n[1], piece), newESIdent("push"), es.gen(n[2], piece))
+  of mLengthStr: result = newMemberExpr(es.gen(n[1], piece), newESIdent("length"), true)
+  of mOrd:
+    #echo es.config.treeToYaml(n)
+    case skipTypes(n[1].typ, abstractVar + abstractRange).kind
+    of tyEnum, tyInt..tyUInt64, tyChar: result = es.gen(n[1], piece)
+    of tyBool: result = newCondExpr(es.gen(n[1], piece), newESLiteral(1), newESLiteral(0) )
+    else: internalError(es.config, n.info, "genOrd")
+  of mModI:
+    result = newMemberCallExpr(
+      newESIdent("Math"),newESIdent("trunc"),
+      es.genBinaryExpr("%", n, piece))
+  of mAshrI:
+    if n[1].typ.size <= 4:
+      result = es.genBinaryExpr(">>", n, piece)
+    else:
+      result = newMemberCallExpr(
+      newESIdent("Math"),newESIdent("floor"),
+        newBinaryExpr("/",
+          es.gen(n[1], piece),
+          newMemberCallExpr(
+            newESIdent("Math"),newESIdent("pow"),
+            [newESLiteral(2), es.gen(n[2], piece)]
+          )
+        )
+      )
+  of mBitandI: result = es.genBinaryExpr("&", n, piece)
+  of mBitorI: result = es.genBinaryExpr("|", n, piece)
+  of mBitxorI: result = es.genBinaryExpr("^", n, piece)
+  of mModU: result = es.genBinaryExpr("%", n, piece)
+  of mXor: result = es.genBinaryExpr("!=", n, piece)
+  of mUnaryMinusI:  result = es.genUnaryExpr("-",true, n, piece)
+  of mUnaryMinusI64:  result = es.genUnaryExpr("-",true, n, piece)
+  of mAbsI: result = newMemberCallExpr(
+      newESIdent("Math"),newESIdent("abs"), [es.gen(n[1],piece)]
+    )
+  of mNot:  result = es.genUnaryExpr("!", true, n, piece)
+  of mUnaryPlusI:  result = es.genUnaryExpr("+",true, n, piece)
+  of mBitnotI:  result = es.genUnaryExpr("~",true, n, piece)
+  of mUnaryPlusF64:  result = es.genUnaryExpr("+",true, n, piece)
+  of mUnaryMinusF64:  result = es.genUnaryExpr("-",true, n, piece)
+  of mConStrStr:
+    #echo es.config.treeToYaml(n)
+    result = es.genBinaryExpr("+", n, piece)
+    #[
+  of mShlI: 
+    if n[1].typ.size <= 4:
+      applyFormat("($1 << $2)", "($1 << $2)")
+    else:
+      applyFormat("($1 * Math.pow(2,$2))", "($1 * Math.pow(2,$2))")
+  of mMinI: applyFormat("nimMin($1, $2)", "nimMin($1, $2)")
+  of mMaxI: applyFormat("nimMax($1, $2)", "nimMax($1, $2)")
+  of mEqCString: applyFormat("($1 == $2)", "($1 == $2)")
+  of mEqProc: applyFormat("($1 == $2)", "($1 == $2)"
+  of mCharToStr: applyFormat("nimCharToStr($1)", "nimCharToStr($1)")
+  of mBoolToStr: applyFormat("nimBoolToStr($1)", "nimBoolToStr($1)")
+  of mIntToStr: applyFormat("cstrToNimstr(($1)+\"\")", "cstrToNimstr(($1)+\"\")")
+  of mInt64ToStr: applyFormat("cstrToNimstr(($1)+\"\")", "cstrToNimstr(($1)+\"\")")
+  of mFloatToStr:
+    useMagic(p, "nimFloatToString")
+    applyFormat "cstrToNimstr(nimFloatToString($1))"
+  of mCStrToStr: applyFormat("cstrToNimstr($1)", "cstrToNimstr($1)")
+  of mStrToStr, mUnown, mIsolate: applyFormat("$1", "$1")
+]#
+    # mModI,
+    # mShrI, mShlI, mAshrI, mBitandI, mBitorI, mBitxorI,
+    # mMinI, mMaxI,
+    # mModU,
+    # mXor, mEqCString, mEqProc,
+    # mUnaryMinusI, mUnaryMinusI64, mAbsI, mNot,
+    # mUnaryPlusI, mBitnotI,
+    # mUnaryPlusF64, mUnaryMinusF64,
+    # mCharToStr, mBoolToStr, mIntToStr, mInt64ToStr, mFloatToStr, mCStrToStr,
+    # mStrToStr
+  # of mAddI..mStrToStr: arith(p, n, r, op)
+  # of mRepr: genRepr(p, n, r)
+  # of mSwap: genSwap(p, n)
+  # of mAppendStrCh:
+  #   binaryExpr(p, n, r, "addChar",
+  #       "addChar($1, $2);")
+  # of mAppendStrStr:
+  #   var lhs, rhs: TCompRes
+  #   gen(p, n[1], lhs)
+  #   gen(p, n[2], rhs)
+
+  #   if skipTypes(n[1].typ, abstractVarRange).kind == tyCString:
+  #     r.res = "$1 += $2;" % [lhs.rdLoc, rhs.rdLoc]
+  #   else:
+  #     let (a, tmp) = maybeMakeTemp(p, n[1], lhs)
+  #     r.res = "$1.push.apply($3, $2);" % [a, rhs.rdLoc, tmp]
+  #   r.kind = resExpr
+  # of mAppendSeqElem:
+  #   var x, y: TCompRes
+  #   gen(p, n[1], x)
+  #   gen(p, n[2], y)
+  #   if mapType(n[2].typ) == etyBaseIndex:
+  #     let c = "[$1, $2]" % [y.address, y.res]
+  #     r.res = "$1.push($2);" % [x.rdLoc, c]
+  #   elif needsNoCopy(p, n[2]):
+  #     r.res = "$1.push($2);" % [x.rdLoc, y.rdLoc]
+  #   else:
+  #     useMagic(p, "nimCopy")
+  #     let c = getTemp(p, defineInLocals=false)
+  #     lineF(p, "var $1 = nimCopy(null, $2, $3);$n",
+  #           [c, y.rdLoc, genTypeInfo(p, n[2].typ)])
+  #     r.res = "$1.push($2);" % [x.rdLoc, c]
+  #   r.kind = resExpr
+  # of mConStrStr:
+  #   genConStrStr(p, n, r)
+  # of mEqStr:
+  #   binaryExpr(p, n, r, "eqStrings", "eqStrings($1, $2)")
+  # of mLeStr:
+  #   binaryExpr(p, n, r, "cmpStrings", "(cmpStrings($1, $2) <= 0)")
+  # of mLtStr:
+  #   binaryExpr(p, n, r, "cmpStrings", "(cmpStrings($1, $2) < 0)")
+  # of mIsNil:
+  #   # we want to accept undefined, so we ==
+  #   if mapType(n[1].typ) != etyBaseIndex:
+  #     unaryExpr(p, n, r, "", "($1 == null)")
+  #   else:
+  #     var x: TCompRes
+  #     gen(p, n[1], x)
+  #     r.res = "($# == null && $# === 0)" % [x.address, x.res]
+  # of mEnumToStr: genRepr(p, n, r)
+  # of mNew, mNewFinalize: genNew(p, n)
+  # of mChr: gen(p, n[1], r)
+  # of mArrToSeq:
+  #   if needsNoCopy(p, n[1]):
+  #     gen(p, n[1], r)
+  #   else:
+  #     var x: TCompRes
+  #     gen(p, n[1], x)
+  #     useMagic(p, "nimCopy")
+  #     r.res = "nimCopy(null, $1, $2)" % [x.rdLoc, genTypeInfo(p, n.typ)]
+  # of mDestroy: discard "ignore calls to the default destructor"
+  # of mOrd: genOrd(p, n, r)
+  # of mLengthStr, mLengthSeq, mLengthOpenArray, mLengthArray:
+  #   unaryExpr(p, n, r, "", "($1).length")
+  # of mHigh:
+  #   unaryExpr(p, n, r, "", "(($1).length-1)")
+  # of mInc:
+  #   if n[1].typ.skipTypes(abstractRange).kind in {tyUInt..tyUInt64}:
+  #     binaryUintExpr(p, n, r, "+", true)
+  #   else:
+  #     if optOverflowCheck notin p.options: binaryExpr(p, n, r, "", "$1 += $2")
+  #     else: binaryExpr(p, n, r, "addInt", "$1 = addInt($3, $2)", true)
+  # of ast.mDec:
+  #   if n[1].typ.skipTypes(abstractRange).kind in {tyUInt..tyUInt64}:
+  #     binaryUintExpr(p, n, r, "-", true)
+  #   else:
+  #     if optOverflowCheck notin p.options: binaryExpr(p, n, r, "", "$1 -= $2")
+  #     else: binaryExpr(p, n, r, "subInt", "$1 = subInt($3, $2)", true)
+  # of mSetLengthStr:
+  #   binaryExpr(p, n, r, "mnewString", "($1.length = $2)")
+  # of mSetLengthSeq:
+  #   var x, y: TCompRes
+  #   gen(p, n[1], x)
+  #   gen(p, n[2], y)
+  #   let t = skipTypes(n[1].typ, abstractVar)[0]
+  #   let (a, tmp) = maybeMakeTemp(p, n[1], x)
+  #   let (b, tmp2) = maybeMakeTemp(p, n[2], y)
+  #   r.res = """if ($1.length < $2) { for (var i=$4.length;i<$5;++i) $4.push($3); }
+  #              else { $4.length = $5; }""" % [a, b, createVar(p, t, false), tmp, tmp2]
+  #   r.kind = resExpr
+  # of mCard: unaryExpr(p, n, r, "SetCard", "SetCard($1)")
+  # of mLtSet: binaryExpr(p, n, r, "SetLt", "SetLt($1, $2)")
+  # of mLeSet: binaryExpr(p, n, r, "SetLe", "SetLe($1, $2)")
+  # of mEqSet: binaryExpr(p, n, r, "SetEq", "SetEq($1, $2)")
+  # of mMulSet: binaryExpr(p, n, r, "SetMul", "SetMul($1, $2)")
+  # of mPlusSet: binaryExpr(p, n, r, "SetPlus", "SetPlus($1, $2)")
+  # of mMinusSet: binaryExpr(p, n, r, "SetMinus", "SetMinus($1, $2)")
+  # of mIncl: binaryExpr(p, n, r, "", "$1[$2] = true")
+  # of mExcl: binaryExpr(p, n, r, "", "delete $1[$2]")
+  # of mInSet:
+  #   binaryExpr(p, n, r, "", "($1[$2] != undefined)")
+  # of mNewSeq: genNewSeq(p, n)
+  # of mNewSeqOfCap: unaryExpr(p, n, r, "", "[]")
+  # of mOf: genOf(p, n, r)
+  # of mDefault: genDefault(p, n, r)
+  # of mReset, mWasMoved: genReset(p, n)
+  # of mEcho: genEcho(p, n, r)
+  # of mNLen..mNError, mSlurp, mStaticExec:
+  #   localError(p.config, n.info, errXMustBeCompileTime % n[0].sym.name.s)
+  # of mNewString: unaryExpr(p, n, r, "mnewString", "mnewString($1)")
+  # of mNewStringOfCap:
+  #   unaryExpr(p, n, r, "mnewString", "mnewString(0)")
+  # of mDotDot:
+  #   genProcForSymIfNeeded(p, n[0].sym)
+  #   genCall(p, n, r)
+  # of mParseBiggestFloat:
+  #   useMagic(p, "nimParseBiggestFloat")
+  #   genCall(p, n, r)
+  # of mSlice:
+  #   # arr.slice([begin[, end]]): 'end' is exclusive
+  #   var x, y, z: TCompRes
+  #   gen(p, n[1], x)
+  #   gen(p, n[2], y)
+  #   gen(p, n[3], z)
+  #   r.res = "($1.slice($2, $3+1))" % [x.rdLoc, y.rdLoc, z.rdLoc]
+  #   r.kind = resExpr
+  # of mMove:
+  #   genMove(p, n, r)
+  else:
+    # try to generate the proc
+    # if not es.graph.backend.ESBackend.generatedProcs.containsOrIncl(n[0].sym.id):
+    #   es.genProc(n[0].sym)
+    # result = genCall(es, n, piece)
+    internalError(es.config, "genMagic: " & $op)
+
 proc genAsgn(es: ESGen, lhs, rhs: PNode, piece: var ESNode, loc: SourceLocation = nil): ESNode =
   result = newExpressionStmt(
     newAsgnExpr("=", es.gen(lhs, piece), es.gen(rhs, piece))
@@ -2489,21 +2713,93 @@ proc genObjTypeInfo(es: ESGen, t: PType, piece: var ESNode, loc: SourceLocation 
   for i, reclst in t.n:
     #echo es.config.treeToYaml(reclst)
     fields.add(es.gen(reclst, piece))
-  newObjTypeDecl(newESIdent(t.sym.name.s), false #[TODO:]#, fields)
+  newObjTypeDecl(newESIdent(t.sym.name.s), t.sym.exportOrUsed, fields)
 
 proc genObjConstrCall(es: ESGen, n: PNode, piece: var ESNode, loc: SourceLocation = nil) : ESNode=
-  if not es.graph.backend.ESBackend.generatedTypeInfos.containsOrIncl(n.typ.sym.id):
-      piece.add(es.genObjTypeInfo(n.typ, piece))
-    
   #echo es.config.treeToYaml(n)
-  var args = newSeq[ESNode]()
-  for i, arg in n:
-    # arg is exprcolonexpr, don't care about name tho
-    if i == 0: continue
-    args.add(es.gen(arg[1], piece))
-  result = newNewExpr(
-    newESIdent(n[0].sym.name.s), args
-  )
+  if n[0].kind != nkSym:
+    var props = newSeq[ESNode]()
+    for i,p in n:
+      if i == 0: continue
+      props.add(newProperty(es.gen(p[0],piece), es.gen(p[1],piece)))
+    result = newObjectExpr(props)
+  else:
+    if not es.graph.backend.ESBackend.generatedTypeInfos.containsOrIncl(n.typ.sym.id):
+        piece.add(es.genObjTypeInfo(n.typ, piece))
+      
+    #echo es.config.treeToYaml(n)
+    var args = newSeq[ESNode]()
+    for i, arg in n:
+      # arg is exprcolonexpr, don't care about name tho
+      if i == 0: continue
+      args.add(es.gen(arg[1], piece))
+    result = newNewExpr(
+      newESIdent(n[0].sym.name.s), args
+    )
+proc genOfBranch(es: ESGen, n: PNode, piece: var ESNode, loc: SourceLocation= nil): seq[ESNode] =
+  #echo es.config.treeToYaml(n)
+  result = @[]
+  if n[0].kind != nkRange:
+    result.add(newSwitchCase(
+        es.gen(n[0], piece),
+        [es.gen(n[1], piece)],
+        false
+    ))
+  else:
+    let span = n[0][1].intVal - n[0][0].intVal
+    for j in 0..<span:
+      result.add(
+        newSwitchCase(
+          newESLiteral(j),
+          [newEmptyStmt()],
+          true
+        )
+      )
+    
+    result.add(
+      newSwitchCase(
+        newESLiteral(span),
+        [es.gen(n[1], piece)],
+        false
+      )
+    )
+proc genOfMultiBranch(es: ESGen, n: PNode, piece: var ESNode, loc: SourceLocation= nil): seq[ESNode] =
+  #echo es.config.treeToYaml(n)
+  result = @[]
+  for i, cl in n:
+    if i != n.len-1:
+      if cl.kind == nkRange:  
+        let span = cl[1].intVal - cl[0].intVal
+        let base = cl[0].intVal
+        for j in 0..span:
+          result.add(newSwitchCase(newESLiteral(j+base), [newEmptyStmt()], true))
+      else:
+        result.add(newSwitchCase(es.gen(cl, piece), [newEmptyStmt()], true))
+    else:
+      result[result.len-1].sconsequent.add(es.gen(cl, piece))
+
+proc genDeaultBranch(es: ESGen, n: PNode, piece: var ESNode, loc: SourceLocation= nil): ESNode=
+  result = newDefaultCase([es.gen(n[0], piece)])
+
+proc genCaseStmt(es: ESGen, n: PNode, piece: var ESNode, loc: SourceLocation = nil): ESNode =
+  #echo es.config.treeToYaml(n)
+  var clauses = newSeq[ESNode]()
+  var cond: ESNode
+  var def : ESNode = newEmptyStmt()
+  for i, cl in n:
+    if cl.kind == nkSym: cond = es.gen(cl, piece) # cond
+    elif cl.kind == nkOfBranch:
+      if cl.len == 2:
+        clauses.add(es.genOfBranch(cl, piece))
+      else:
+        clauses.add(es.genOfMultiBranch(cl, piece))
+    elif cl.kind == nkElse:
+      def = es.genDeaultBranch(cl, piece)
+    else:
+      es.config.internalError("gencasestmt kind " & $cl.kind)
+  result = newSwitchStmt(cond, clauses, def)
+
+  
 
 proc gen(es: ESGen, n: PNode, piece: var ESNode, loc: SourceLocation = nil): ESNode =
   let conf = es.config
@@ -2530,10 +2826,14 @@ proc gen(es: ESGen, n: PNode, piece: var ESNode, loc: SourceLocation = nil): ESN
   of nkFloatLit..nkFloat64Lit:
     result = newESLiteral(n.floatVal)
   of nkCallKinds:
-    if isEmptyType(n.typ):
-      result = genCall(es, n, piece) # TODO: use the fact that no result is needed
     if (n[0].kind == nkSym) and (n[0].sym.magic != mNone):
-      result = genMagicCall(es, n, piece)
+      #echo es.config.treeToYaml(n)
+      if isEmptyType(n.typ):
+        result = newExpressionStmt(genMagic(es, n, piece))
+      else: result = genMagic(es, n, piece)
+    elif isEmptyType(n.typ):
+      # a call stmt
+      result = newExpressionStmt(genCall(es, n, piece)) # TODO: use the fact that no result is needed
     else:
       result = genCall(es, n, piece)
   of nkVarSection:
@@ -2541,22 +2841,30 @@ proc gen(es: ESGen, n: PNode, piece: var ESNode, loc: SourceLocation = nil): ESN
     # TODO: if v[2] is nkCallKind no need for brackets, the returned result is already a var
     for v in n.sons:
       v[0].sym.loc.storage = OnHeap #TODO: proper fix later on...
-      result.add(
-        newVarDecl(
-          esLet, v[0].sym.exportOrUsed,
-          [newVarDeclarator(newESIdent(v[0].sym.name.s, v[0].sym.typ.typeToString), newArrayExpr([es.gen(v[2], piece)]))]
+      if v[2].kind == nkEmpty:
+        result.add(
+          newVarDecl(
+            esLet, v[0].sym.exportOrUsed and v[0].sym.owner.kind == skModule,
+            [newVarDeclarator(newESIdent(v[0].sym.mangleName, v[0].sym.typ.typeToString), newArrayExpr([ es.genNilLit(v[0].sym.typ) ]))]
+          )
         )
-      )
+      else:
+        result.add(
+          newVarDecl(
+            esLet, v[0].sym.exportOrUsed and v[0].sym.owner.kind == skModule,
+            [newVarDeclarator(newESIdent(v[0].sym.mangleName, v[0].sym.typ.typeToString), newArrayExpr([es.gen(v[2], piece)]))]
+          )
+        )
   of nkLetSection:
     result = newBlockStmt()
     for v in n.sons:
       result.add(
         newVarDecl(
-          esConst, v[0].sym.exportOrUsed,
-          [newVarDeclarator(newESIdent(v[0].sym.name.s, v[0].sym.typ.typeToString), es.gen(v[2], piece))]
+          esConst, v[0].sym.exportOrUsed and v[0].sym.owner.kind == skModule,
+          [newVarDeclarator(newESIdent(v[0].sym.mangleName, v[0].sym.typ.typeToString), es.gen(v[2], piece))]
         )
       )
-  of nkAsgn:
+  of nkAsgn, nkFastAsgn:
     result = es.genAsgn(n[0], n[1], piece)
   of nkStmtListExpr:
     for i, son in n.sons:
@@ -2571,25 +2879,27 @@ proc gen(es: ESGen, n: PNode, piece: var ESNode, loc: SourceLocation = nil): ESN
     result = newArrayExpr()
     for el in n.sons:
       result.add(es.gen(el,piece))
+  of nkBracketExpr:
+    result = newMemberExpr(es.gen(n[0], piece), es.gen(n[1], piece), false)
   of nkWhileStmt:
     result = newWhileStmt(
       es.gen(n[0], piece),
       es.gen(n[1], piece)
     )
   of nkBlockStmt:
-    echo es.config.treeToYaml(n)
+    #echo es.config.treeToYaml(n)
     result = newLabeledStmt(
-      newESIdent(n[0].sym.name.s.mangle),
+      newESIdent(n[0].sym.mangleName & $n[0].sym.id),
       es.gen(n[1], piece)
     )
   of nkConstSection: 
     result = newBlockStmt()
     for c in n.sons:
-      if c[0].sym.exportOrUsed:
+      if c[0].sym.exportOrUsed and c[0].sym.owner.kind == skModule:
         result.add(
           newVarDecl(
-            esConst, c[0].sym.exportOrUsed,
-            [newVarDeclarator(newESIdent(c[0].sym.name.s, c[0].sym.typ.typeToString), es.gen(c[2], piece))]
+            esConst, c[0].sym.exportOrUsed and c[0].sym.owner.kind == skModule,
+            [newVarDeclarator(newESIdent(c[0].sym.mangleName, c[0].sym.typ.typeToString), es.gen(c[2], piece))]
           )
         )
     if result.len == 0:
@@ -2606,6 +2916,22 @@ proc gen(es: ESGen, n: PNode, piece: var ESNode, loc: SourceLocation = nil): ESN
       result = newArrayExpr([
         es.gen(n[0], piece), newESLiteral(0)
       ])
+  of nkIfStmt:
+    #echo conf.treeToYaml(n)
+    #echo renderTree(n)
+    result = newEmptyStmt()
+    for bidx in countdown(n.len-1,0):
+      #result = gen else1
+      #result2 = gen if1 else result1
+      #result3 = gen if2 else result2
+      if n[bidx].kind == nkElse:
+        result = es.gen(n[bidx][0], piece)
+      else:
+        result = newIfStmt(
+          es.gen(n[bidx][0], piece), # cond 
+          es.gen(n[bidx][1], piece), # then
+          result                             # else
+        )
   of nkDerefExpr, nkHiddenDeref:
     let ident = es.gen(n[0], piece)
     result = newMemberExpr(
@@ -2617,7 +2943,55 @@ proc gen(es: ESGen, n: PNode, piece: var ESNode, loc: SourceLocation = nil): ESN
     result = newMemberExpr(
       es.gen(n[0],piece), es.gen(n[1],piece), true
     )
-  else: internalError(es.config, "gen: unknown node type: " & $n.kind)
+  of nkPragma:
+    #echo es.config.treeToYaml(n)
+    let maybeEmit = n.getPragmaStmt(wEmit)
+    if not maybeEmit.isNil:
+      #echo es.config.treeToYaml(maybeEmit)
+      var emitstr: string = ""
+      for el in maybeEmit[1]: # [0] is !"emit"
+        if el.kind == nkStrLit: emitstr.add(el.getStr)
+        elif el.kind == nkIdent: 
+          emitstr.add(el.ident.s) # TODO: mangling?
+        elif el.kind == nkSym:
+          emitstr.add(el.sym.mangleName)
+        else: discard
+      result = newESEmitExpr(emitstr)
+    else: 
+      echo es.config.treeToYaml(n)
+      es.config.internalError("unhandled pragma")
+  of nkCaseStmt:
+    result = es.genCaseStmt(n, piece)
+  of nkTupleConstr:
+    #echo es.config.treeToYaml(n)
+    var props = newSeq[ESNode]()
+    for p in n:
+      props.add(newProperty(es.gen(p[0],piece), es.gen(p[1],piece)))
+    result = newObjectExpr(props)
+  of nkPragmaBlock:
+    result= es.gen(n.lastSon,piece)
+  of nkAsmStmt:
+    var emitstr: string = ""
+    #echo es.config.treeToYaml(n)
+    for el in n: # [0] is !"emit"
+      if el.kind == nkStrLit: emitstr.add(el.getStr)
+      elif el.kind == nkIdent: 
+        emitstr.add(el.ident.s) # TODO: mangling?
+      elif el.kind == nkSym:
+        emitstr.add(el.sym.mangleName)
+      else: discard
+    result = newESEmitExpr(emitstr)
+  of nkRaiseStmt:
+    es.prepareMagic("raiseException")
+    result = newCallExpr(newESIdent("raiseException"), es.gen(n[0],piece))
+  of nkConv:
+    result = es.gen(n[1], piece)#TODO: figure out conv of non basic types?
+  of nkStringToCString:
+    es.prepareMagic("esNimStrToJsStr")
+    result = newCallExpr(newESIdent("esNimStrToJsStr"), es.gen(n[0],piece))
+  else: 
+    echo es.config.treeToYaml(n)
+    internalError(es.config, "gen: unknown node kind: " & $n.kind)
 
   #[
   of nkClosure:
@@ -2670,7 +3044,11 @@ proc myProcess(b: PPassContext, n: PNode): PNode =
   var transfN = transformStmt(m.graph,m.module,n)
   if transfN.kind in nkGenSkippedKinds: return
 
-  es.ast.add(m.gen(transfN, es.ast))
+  if not (transfN.kind == nkStmtList):
+    es.ast.add(m.gen(transfN, es.ast))
+  else:
+    for stmt in transfN:
+      es.ast.add(m.gen(stmt, es.ast))
 
 proc myClose(graph: ModuleGraph; b: PPassContext, n: PNode): PNode =
   if passes.skipCodegen(graph.config, n): return n

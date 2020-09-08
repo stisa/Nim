@@ -40,6 +40,21 @@ var
   lastJSError {.importc, nodecl, volatile.}: PJSError = nil
 
 {.push stacktrace: off, profiler:off.}
+
+when defined es:
+  proc esNimStrLit(c: cstring): string {.compilerproc, asmNoStackFrame.} =
+    {.emit: ["return (new TextEncoder).encode(",c,")"].}
+  proc esNimStrToJsStr(c: string): cstring {.compilerproc, asmNoStackFrame.} =
+    {.emit: ["result[0] = (new TextDecoder).decode(new Uint8Array(",c,"))"].}
+  proc esNewString(len: int): string {.asmNoStackFrame, compilerproc.} =
+    {.emit: ["return new Uint8Array(",len,");"].}
+  proc esNimFloatToNimStr(num: SomeFloat): string {.asmNoStackFrame, compilerproc.} =
+    {.emit: ["if (Number.isInteger(", num,")) {\n  return (new TextEncoder).encode(",num," + '.0');\n} else {\n  return (new TextEncoder).encode(",num,".toString());\n}"].} #" this comment fixes syntax highlighting
+  proc esNimIntToNimStr(num: SomeInteger): string {.asmNoStackFrame, compilerproc.} =
+    {.emit: ["return (new TextEncoder).encode(", num, ".toString());"].}
+  proc esAppendArrArr[T](x: var openArray[T], y:openArray[T]) {.asmNoStackFrame, compilerproc.} =
+    {.emit: [ x," = [...", x ,", ...", y, "];" ].}
+
 proc nimBoolToStr(x: bool): string {.compilerproc.} =
   if x: result = "true"
   else: result = "false"
@@ -99,57 +114,77 @@ proc auxWriteStackTrace(f: PCallFrame): string =
     add(result, tempFrames[j].procname)
     add(result, "\n")
 
-proc rawWriteStackTrace(): string =
-  if framePtr != nil:
-    result = "Traceback (most recent call last)\n" & auxWriteStackTrace(framePtr)
-  else:
-    result = "No stack traceback available\n"
+when defined es:
+  proc rawWriteStackTrace() =
+    {.emit: "console.trace();".}
+  proc getStackTrace*()= rawWriteStackTrace()
+else:
+  proc rawWriteStackTrace(): string =
+    if framePtr != nil:
+      result = "Traceback (most recent call last)\n" & auxWriteStackTrace(framePtr)
+    else:
+      result = "No stack traceback available\n"
 
-proc getStackTrace*(): string = rawWriteStackTrace()
-proc getStackTrace*(e: ref Exception): string = e.trace
+  proc getStackTrace*(): string = rawWriteStackTrace()
+  proc getStackTrace*(e: ref Exception): string = e.trace
 
-proc unhandledException(e: ref Exception) {.
-    compilerproc, asmNoStackFrame.} =
-  var buf = ""
-  if e.msg.len != 0:
-    add(buf, "Error: unhandled exception: ")
-    add(buf, e.msg)
-  else:
-    add(buf, "Error: unhandled exception")
-  add(buf, " [")
-  add(buf, e.name)
-  add(buf, "]\n")
-  when NimStackTrace:
-    add(buf, rawWriteStackTrace())
-  let cbuf = cstring(buf)
-  framePtr = nil
-  {.emit: """
-  if (typeof(Error) !== "undefined") {
-    throw new Error(`cbuf`);
-  }
-  else {
-    throw `cbuf`;
-  }
-  """.}
-
-proc raiseException(e: ref Exception, ename: cstring) {.
-    compilerproc, asmNoStackFrame.} =
-  e.name = ename
-  if excHandler == 0:
-    unhandledException(e)
-  when NimStackTrace:
-    e.trace = rawWriteStackTrace()
-  asm "throw `e`;"
-
-proc reraiseException() {.compilerproc, asmNoStackFrame.} =
-  if lastJSError == nil:
-    raise newException(ReraiseDefect, "no exception to reraise")
-  else:
+  proc unhandledException(e: ref Exception) {.
+      compilerproc, asmNoStackFrame.} =
+    var buf = ""
+    if e.msg.len != 0:
+      add(buf, "Error: unhandled exception: ")
+      add(buf, e.msg)
+    else:
+      add(buf, "Error: unhandled exception")
+    add(buf, " [")
+    add(buf, e.name)
+    add(buf, "]\n")
+    when NimStackTrace:
+      add(buf, rawWriteStackTrace())
+    let cbuf = cstring(buf)
+    framePtr = nil
+    {.emit: """
+    if (typeof(Error) !== "undefined") {
+      throw new Error(`cbuf`);
+    }
+    else {
+      throw `cbuf`;
+    }
+    """.}
+when defined es:
+  proc raiseException(e: ref Exception, ename: cstring) {.
+      compilerproc, asmNoStackFrame.} =
+    e.name = ename
     if excHandler == 0:
-      if isNimException():
-        unhandledException(cast[ref Exception](lastJSError))
+      getStackTrace()
+    when NimStackTrace:
+      rawWriteStackTrace();
+    asm "throw `e`;"
+  
+  proc reraiseException() {.compilerproc, asmNoStackFrame.} =
+    if lastJSError == nil:
+      raise newException(ReraiseDefect, "no exception to reraise")
+    else:
+      asm "throw lastJSError;"
+else:
+  proc raiseException(e: ref Exception, ename: cstring) {.
+      compilerproc, asmNoStackFrame.} =
+    e.name = ename
+    if excHandler == 0:
+      unhandledException(e)
+    when NimStackTrace:
+      e.trace = rawWriteStackTrace()
+    asm "throw `e`;"
 
-    asm "throw lastJSError;"
+  proc reraiseException() {.compilerproc, asmNoStackFrame.} =
+    if lastJSError == nil:
+      raise newException(ReraiseDefect, "no exception to reraise")
+    else:
+      if excHandler == 0:
+        if isNimException():
+          unhandledException(cast[ref Exception](lastJSError))
+
+      asm "throw lastJSError;"
 
 proc raiseOverflow {.exportc: "raiseOverflow", noreturn, compilerproc.} =
   raise newException(OverflowDefect, "over- or underflow")

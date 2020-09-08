@@ -1,5 +1,5 @@
 import esast, esexpr
-
+import strutils
 # Statements and declarations
 
 proc newExpressionStmt*(expression:ESNode, loc:SourceLocation=nil): ESNode =
@@ -48,31 +48,40 @@ proc newContinueStmt*(lb:ESNode,loc:SourceLocation=nil):ESNode =
   result = newESNode(ekContinueStatement,loc)
   result.blabel = lb
 
-proc newIfStmt*(cond,then,other:ESNode,loc:SourceLocation=nil):ESNode =
-  assert cond.isExpression
-  assert then.isStatement
-  assert other.isStatement
+proc newIfStmt*(cond,then: ESNode,other:ESNode= newEmptyStmt(),loc:SourceLocation=nil):ESNode =
+  assert cond.isExpression, $cond.typ
+  assert then.isStatement or then.typ == ekCallExpression, $then.typ
+  assert other.isStatement, $other.typ
 
   result = newESNode(ekIfStatement, loc)
   result.test = cond
   result.iconsequent = then
   result.ialternate = other
 
-proc newSwitchStmt*(disc:ESNode, cases:varargs[ESNode],loc:SourceLocation=nil):ESNode =
+proc newSwitchStmt*(disc:ESNode, cases:varargs[ESNode], def: ESNode= newEmptyStmt(),loc:SourceLocation=nil):ESNode =
   assert disc.isExpression
   for el in cases: assert el.typ == ekSwitchCase
 
   result = newESNode(ekSwitchStatement,loc)
   result.sdiscriminant = disc
   result.scases = @cases
+  result.def = def
 
-proc newSwitchCase*(cond:ESNode, thens:varargs[ESNode], loc:SourceLocation=nil):ESNode =
+proc newSwitchCase*(cond:ESNode, thens:varargs[ESNode], fall:bool = false, loc:SourceLocation=nil):ESNode =
   assert cond.isExpression
-  for el in thens: assert el.isStatement
+  if not fall:
+    for el in thens: assert el.isStatement, $el.typ
 
   result = newESNode(ekSwitchCase)
   result.test = cond
   result.sconsequent = @thens
+  result.sfall = fall
+
+proc newDefaultCase*(thens:varargs[ESNode], loc:SourceLocation=nil):ESNode =
+  for el in thens: assert el.isStatement, $el.typ
+
+  result = newESNode(ekDefaultCase)
+  result.dconsq = @thens
 
 proc newThrowStmt*(arg:ESNode,loc:SourceLocation=nil):ESNode =
   assert arg.isExpression
@@ -167,7 +176,7 @@ proc newESLiteral*(val:string,loc:SourceLocation=nil):ESNode =
   result.value = newMemberCallExpr(
     newESIdent("(new TextEncoder)"), 
     newESIdent("encode"),
-    newESEmitExpr("\""&val&"\"")
+    newESEmitExpr(val.escape)
   )
 
 proc newObjTypeDecl*(name: ESNode, exp:bool, fields: varargs[ESNode]): ESNode =

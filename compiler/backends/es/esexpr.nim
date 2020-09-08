@@ -4,7 +4,7 @@ import esast
 
 proc newThisExpr*(loc:SourceLocation=nil):ESNode = newESNode(ekThisExpression,loc)
 proc newArrayExpr*(els:openArray[ESNode] = @[], loc:SourceLocation=nil):ESNode =
-  for el in els: assert el.isExpression
+  for el in els: assert el.isExpression, $el.typ
 
   result = newESNode(ekArrayExpression, loc)
   result.elements = @els
@@ -15,10 +15,10 @@ proc newObjectExpr*(props:varargs[ESNode], loc:SourceLocation=nil):ESNode =
   result = newESNode(ekObjectExpression, loc)
   result.properties = @props
 
-proc newProperty*(k,val:ESNode,kind:string, loc:SourceLocation=nil):ESNode =
+proc newProperty*(k,val:ESNode,kind:string="", loc:SourceLocation=nil):ESNode =
   assert k.isLiteral or k.typ == ekIdentifier
   assert val.isExpression
-  assert kind in ["init","get","set"]
+  assert kind in ["init","get","set", ""]
 
   result = newESNode(ekProperty,loc)
   result.key = k
