@@ -698,6 +698,13 @@ proc genObjTypeInfo(es: ESGen, t: PType, stmntbody: var ESNode, loc: SourceLocat
   newObjTypeDecl(newESIdent(t.sym.name.s), t.sym.exportOrUsed, fields)
 
 proc genObjConstrCall(es: ESGen, n: PNode, stmntbody: var ESNode, loc: SourceLocation = nil) : ESNode=
+  ## type A = object
+  ##   x: string
+  ## becomes
+  ## function A(x){
+  ##   this.x = x
+  ##   return this
+  ## }
   #echo es.config.treeToYaml(n)
   if n[0].kind != nkSym:
     var props = newSeq[ESNode]()
@@ -723,14 +730,13 @@ proc genTupleConstr(es: ESGen, n: PNode, stmntbody: var ESNode, loc: SourceLocat
   ## var x = (x:1,x:2)
   ## let y = (1,2)
   ## becomes
-  ## let x = [{"0":1,"1":2}]
+  ## let x = [{"x":1,"y":2,"0":1,"1":2}] # TODO: avoid duplacting fields
   ## const y = {"0":1,"1":2}
   echo es.config.treeToYaml(n)
   var props = newSeq[ESNode]()
   if n[0].kind == nkExprColonExpr: # a named tuple
     for i, p in n:
       props.add(newProperty(es.gen(p[0], stmntbody), es.gen(p[1],stmntbody)))
-      # TODO: avoid duplacting fields
       props.add(newProperty(newESIdent($i), es.gen(p[1],stmntbody)))
   else:
     for i, p in n:
@@ -800,7 +806,8 @@ proc genCaseStmt(es: ESGen, n: PNode, stmntbody: var ESNode, loc: SourceLocation
   ##   case(5)
   ##   console.log(k+1);
   ##   break;
-  ##   
+  ##   default:
+  ##   console.log("0")
   var clauses = newSeq[ESNode]()
   var cond: ESNode
   var def : ESNode = newEmptyStmt()
@@ -849,6 +856,9 @@ proc genCallOrMagic(es: ESGen, n: PNode, stmntbody: var ESNode, loc: SourceLocat
     result = genCall(es, n, stmntbody)
 
 proc genVar(es: ESGen, n: PNode, stmntbody: var ESNode, loc: SourceLocation = nil): ESNode =
+  ## var x = 0
+  ## becomes
+  ## let x = [0]
   result = newBlockStmt()
   # CHECK: if v[2] is nkCallKind no need for brackets, the returned result is already a var?
   for v in n.sons:
