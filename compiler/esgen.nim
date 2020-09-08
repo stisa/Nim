@@ -1978,8 +1978,12 @@ proc genProc(es: ESGen, prc: PSym) =
       )
     )
   
-  var tmpbody = es.gen(transformBody(es.graph, prc, false), bdy)
-  bdy.add(tmpbody)
+  var trandiscarded = newBlockStmt()
+  # FIXME: looks like this gen generates some wrong parts
+  # added directly to the var body passed in
+  bdy.add(
+    es.gen(transformBody(es.graph, prc, false), trandiscarded)
+  )
   if not res.isNil:
     #if ressym.typ.kind == tyVar:
       # bdy.add(
@@ -2480,17 +2484,23 @@ proc genMagic(es: ESGen, n: PNode, piece: var ESNode, loc: SourceLocation = nil)
   of mEcho:
     result = es.genEcho(n, piece)
   of mIntToStr, mInt64ToStr, mFloatToStr, mBoolToStr, mCharToStr, mCStrToStr, 
-    mNewString, #[mAppendStrStr,]# mAppendStrCh, mAppendSeqElem: 
+    mNewString, #[mAppendStrStr, mAppendStrCh, mAppendSeqElem]#: 
     result = es.genMagicCall(n, piece)
   of mAppendStrStr: 
+    result = newAsgnExpr( "=",
+      es.gen(n[1], piece),
+      newArrayExpr([
+        newUnaryExpr("...", true, es.gen(n[1], piece)) ,
+        newUnaryExpr("...", true, es.gen(n[2], piece)) 
+      ])
+    )
+  of mAppendStrCh, mAppendSeqElem: 
     result = newAsgnExpr("=",
       es.gen(n[1], piece),
-      newArrayExpr(
-        [
-          newUnaryExpr("...", true, es.gen(n[1], piece)),
-          newUnaryExpr("...", true, es.gen(n[2], piece))
-        ]
-      )
+      newArrayExpr([
+        newUnaryExpr("...", true, es.gen(n[1], piece)) ,
+        es.gen(n[2], piece) 
+      ])
     )
   #  of mAppendStrCh, mAppendSeqElem:
   #    result = newMemberCallExpr(es.gen(n[1], piece), newESIdent("push"), es.gen(n[2], piece))
@@ -2764,7 +2774,7 @@ proc genOfBranch(es: ESGen, n: PNode, piece: var ESNode, loc: SourceLocation= ni
       )
     )
 proc genOfMultiBranch(es: ESGen, n: PNode, piece: var ESNode, loc: SourceLocation= nil): seq[ESNode] =
-  #echo es.config.treeToYaml(n)
+  echo es.config.treeToYaml(n)
   result = @[]
   for i, cl in n:
     if i != n.len-1:
@@ -2776,7 +2786,9 @@ proc genOfMultiBranch(es: ESGen, n: PNode, piece: var ESNode, loc: SourceLocatio
       else:
         result.add(newSwitchCase(es.gen(cl, piece), [newEmptyStmt()], true))
     else:
-      result[result.len-1].sconsequent.add(es.gen(cl, piece))
+      # reuse last case and make it non-fallthrough
+      result[^1].sfall = false
+      result[^1].sconsequent = @[es.gen(cl, piece)]
 
 proc genDeaultBranch(es: ESGen, n: PNode, piece: var ESNode, loc: SourceLocation= nil): ESNode=
   result = newDefaultCase([es.gen(n[0], piece)])
@@ -2787,6 +2799,7 @@ proc genCaseStmt(es: ESGen, n: PNode, piece: var ESNode, loc: SourceLocation = n
   var cond: ESNode
   var def : ESNode = newEmptyStmt()
   for i, cl in n:
+    echo cl.kind
     if cl.kind == nkSym: cond = es.gen(cl, piece) # cond
     elif cl.kind == nkOfBranch:
       if cl.len == 2:

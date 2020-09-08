@@ -61,7 +61,7 @@ proc newIfStmt*(cond,then: ESNode,other:ESNode= newEmptyStmt(),loc:SourceLocatio
 proc newSwitchStmt*(disc:ESNode, cases:varargs[ESNode], def: ESNode= newEmptyStmt(),loc:SourceLocation=nil):ESNode =
   assert disc.isExpression
   for el in cases: assert el.typ == ekSwitchCase
-
+  assert def.typ in {ekEmptyStatement, ekDefaultCase}
   result = newESNode(ekSwitchStatement,loc)
   result.sdiscriminant = disc
   result.scases = @cases

@@ -2,16 +2,16 @@ import esast
 from strutils import `%`,splitLines, indent
 import strformat
 
-proc render*(en:ESNode, indlvl:int=0):string
+proc render*(en:ESNode, indlvl:int=0 ):string
 
 proc renderSourceLoc*(sl:SourceLocation):string = 
   "\n// source:" & sl.source & " line: " & $sl.starts.line & ", col: " & $sl.starts.col & "\n"
 
-proc renderIdent*(sl:ESNode):string =
+proc renderIdent*(sl:ESNode, indlvl=0):string =
   assert sl.typ == ekIdentifier, $sl.typ
   sl.name
 
-proc renderLit*(lit:ESNode):string =
+proc renderLit*(lit:ESNode, indlvl=0):string =
   case lit.typ:
   of ekBoolLit: result = $lit.bval
   of ekFloatLit: 
@@ -28,12 +28,12 @@ proc renderLit*(lit:ESNode):string =
   else:
     assert false, "not a literal " & $lit.typ
 
-proc renderProgram(p:ESNode): string =
+proc renderProgram(p:ESNode, indlvl=0): string =
   result = "'use strict'" # TODO: only 1 per script
   for el in p.pbody:
     add result, "\n"&render(el)
 
-proc renderModule(p:ESNode): string =
+proc renderModule(p:ESNode, indlvl=0): string =
   result = "'use strict'" # TODO: only 1 per script
   var indlvl = 0
   for i in p.mimports:
@@ -43,20 +43,20 @@ proc renderModule(p:ESNode): string =
   for e in p.mexports:
     add result, "\n" & render(e, indlvl)
 
-proc renderImport(p:ESNode): string =
+proc renderImport(p:ESNode, indlvl=0): string =
   result = &"import {p.iident} from {p.imodule};"
 
-proc renderExport(p:ESNode): string =
+proc renderExport(p:ESNode, indlvl=0): string =
   result = &"export {{ {p.eident} }};"
 
-proc renderVarDeclarator(v:ESNode):string =
+proc renderVarDeclarator(v:ESNode, indlvl=0):string =
   #result = fmt"{render(v.vid)} /*{v.vid.ptyp}*/ = {render(v.vinit)}"
   if v.vid.typ == ekIdentifier:
     result = fmt"{render(v.vid)} /*{v.vid.ptyp}*/ = {render(v.vinit)}"
   else:
     result = fmt"{render(v.vid)} /**/ = {render(v.vinit)}"
 
-proc renderParam(p: ESNode): string =
+proc renderParam(p: ESNode, indlvl=0): string =
   if p.typ == ekIdentifier:
     result = &"{p.name} /*{p.ptyp}*/" 
   elif p.typ == ekVariableDeclarator:
@@ -84,14 +84,14 @@ proc renderBlockStmt(b:ESNode, indlvl=0):string =
     add result, render(s) #& ";" 
   result = result.indent(indlvl)
 
-proc renderEmptyStmt(s:ESNode):string = ";"
+proc renderEmptyStmt(s:ESNode, indlvl=0):string = ";"
 
-proc renderDebuggerStmt(s:ESNode):string = "debugger;"
+proc renderDebuggerStmt(s:ESNode, indlvl=0):string = "debugger;"
 
-proc renderWithStmt(s:ESNode):string =
+proc renderWithStmt(s:ESNode, indlvl=0):string =
   "//withstmt not supported for now"
 
-proc renderReturnStmt(s:ESNode):string =
+proc renderReturnStmt(s:ESNode, indlvl=0):string =
   result = "return " & render(s.argument) & ";"
 
 proc renderLabeledStmt(s:ESNode, indlvl = 0):string = 
@@ -99,13 +99,13 @@ proc renderLabeledStmt(s:ESNode, indlvl = 0):string =
   add result, render(s.body).indent(indlvl+2) & 
   "\n};"
 
-proc renderBreakStmt(s:ESNode):string =
+proc renderBreakStmt(s:ESNode, indlvl=0):string =
   result = "break "
   if not s.blabel.isNil:
     add result, render(s.blabel)
   add result, ";"
 
-proc renderContinueStmt(s:ESNode):string =
+proc renderContinueStmt(s:ESNode, indlvl=0):string =
   result = "continue "
   if not s.blabel.isNil:
     add result, render(s.blabel)
@@ -121,61 +121,68 @@ proc renderIfStmt(i:ESNode, indlvl=0):string =
     else:
       add result, " else $1 " % [render(i.ialternate).indent(indlvl+2)]
 
-proc renderSwitchStmt(s:ESNode):string =
-  result = "switch ($1) {\n" % [render(s.sdiscriminant)]
-  for c in s.scases:
-    add result, render(c)
-  add result, "\n}"
-
-proc renderSwitchCase(c:ESNode):string =
-  result = "case ($1):\n" % [render(c.test)]
+proc renderSwitchCase(c:ESNode, indlvl=0):string =
+  result = "\ncase ($1):" % [render(c.test)]
   if not c.sfall: 
-    for s in c.sconsequent:
-      add result, render(s)
-      add result, "\nbreak;\n"
+    for i,s in c.sconsequent:
+      add result, "\n"
+      add result, render(s).indent(2)
+      add result, "\nbreak;".indent(2)
+      if not(i==c.sconsequent.len-1): add result, "\n"
+  result = result.indent(indlvl)
 
 proc renderDefaultCase(c:ESNode, indlvl=0):string =
-  result = "default:\n"
-  var tmp = ""
-  for s in c.dconsq:
-    add tmp, render(s)
-  tmp = tmp.indent(indlvl+2)
-  result.add(tmp)
-  
-proc renderThrowStmt(t:ESNode):string = 
+  result = "\ndefault:"
+  for i, s in c.dconsq:
+    add result, "\n"
+    add result, render(s).indent(2)
+    if not(i==c.dconsq.len-1): add result, "\n"
+  result = result.indent(indlvl)
+
+proc renderSwitchStmt(s:ESNode,indlvl=0):string =
+  result = "switch ($1) {" % [render(s.sdiscriminant)]
+  for c in s.scases:
+    add result, renderSwitchCase(c).indent(2)
+  if s.def.typ == ekDefaultCase:
+    add result, renderDefaultCase(s.def).indent(2)
+  add result, "\n}"
+  result = result.indent(indlvl)
+
+
+proc renderThrowStmt(t:ESNode, indlvl=0):string = 
   result = "throw $1;" % [render(t.argument)]
 
-proc renderTryStmt(t:ESNode):string = 
+proc renderTryStmt(t:ESNode, indlvl=0):string = 
   result = "try {\n$1 \n} " % [render(t.tblck)]
   if not t.thandler.isNil:
     add result, render(t.thandler)
   if not t.tfinalizer.isNil:
     add result, "finally {\n$1\n}" % [render(t.tfinalizer)]
 
-proc renderCatchClause(c:ESNode):string =
+proc renderCatchClause(c:ESNode, indlvl=0):string =
   result = "catch ($1) {$2}" % [render(c.cparam), render(c.body)]
 
 proc renderWhileStmt(w:ESNode, indlvl=0):string =
   result = "while ($1) {\n$2\n}" % [render(w.test), render(w.body).indent(indlvl+2)]
 
-proc renderDoWhileStmt(d:ESNode):string =
+proc renderDoWhileStmt(d:ESNode, indlvl=0):string =
   result = "do {\n$1\n} while ($2)" % [render(d.body),render(d.test)]
 
 proc renderForStmt(f:ESNode, indlvl=0):string =
   result = "for ($1 $2; $3) {\n$4\n}" % [
     render(f.finit), render(f.test), render(f.fupdate), render(f.body,indlvl+2)]
 
-proc renderForInStmt(f:ESNode):string =
+proc renderForInStmt(f:ESNode, indlvl=0):string =
   result = "for ($1 in $2) {\n$3\n}" % [
     render(f.left), render(f.right), render(f.body)]
 
-proc render(k: ESVarKind): string = 
+proc render(k: ESVarKind, indlvl=0): string = 
   case k:
   of esLet: "let"
   of esVar: "var"
   of esConst: "const"
 
-proc renderVarDecl(v:ESNode):string =
+proc renderVarDecl(v:ESNode, indlvl=0):string =
   result = if v.vexp: "export " else: "" 
   result &= render(v.vkind) & " "
   for i,vd in v.vdeclarations:
@@ -185,9 +192,9 @@ proc renderVarDecl(v:ESNode):string =
     else:
       add result,";"
 
-proc renderThisExpr(t:ESNode):string = "this"
+proc renderThisExpr(t:ESNode, indlvl=0):string = "this"
 
-proc renderArrayExpr(a:ESNode):string =
+proc renderArrayExpr(a:ESNode, indlvl=0):string =
   result = "["
   for i,el in a.elements:
     add result, render(el)
@@ -196,7 +203,7 @@ proc renderArrayExpr(a:ESNode):string =
     else:
       add result, "]"
 
-proc renderObjExpr(o:ESNode):string = 
+proc renderObjExpr(o:ESNode, indlvl=0):string = 
   result = "{"
   for i,prop in o.properties:
     add result, render(prop)
@@ -205,41 +212,41 @@ proc renderObjExpr(o:ESNode):string =
     else:
       add result, "}"
 
-proc renderProperty(p:ESNode):string =
+proc renderProperty(p:ESNode, indlvl=0):string =
   result = "\"$1\" : $2" % [render(p.key), render(p.value)]
 
-proc renderUnaryExpr(u:ESNode):string =
+proc renderUnaryExpr(u:ESNode, indlvl=0):string =
   if u.unprefix:
     result = "$1($2)" % [u.unoperator, render(u.argument)]
   else:
     result = "($2)$1" % [u.unoperator, render(u.argument)]
 
-proc renderUpdateExpr(u:ESNode): string =
+proc renderUpdateExpr(u:ESNode, indlvl=0): string =
   if u.uprefix:
     result = "$1$2" % [u.uoperator, render(u.argument)]
   else:
     result = "$2$1" % [u.uoperator, render(u.argument)]
 
-proc renderBinaryExpr(b:ESNode):string =
+proc renderBinaryExpr(b:ESNode, indlvl=0):string =
   result = "$1 $2 $3" % [render(b.left), b.boperator, render(b.right)]
 
-proc renderAsgnExpr(a:ESNode):string =
+proc renderAsgnExpr(a:ESNode, indlvl=0):string =
   result = "$1 $2 $3" % [render(a.left), a.aoperator, render(a.right)]
 
-proc renderLogicalExpr(e:ESNode):string =
+proc renderLogicalExpr(e:ESNode, indlvl=0):string =
   result = "$1 $2 $3" % [render(e.left), e.loperator, render(e.right)]
 
-proc renderMemberExpr(m:ESNode):string =
+proc renderMemberExpr(m:ESNode, indlvl=0):string =
   if m.computed:
     result = "$1.$2" % [render(m.mobject), render(m.property)]
   else:
     result = "$1[$2]" % [render(m.mobject), render(m.property)]
 
-proc renderCondExpr(c:ESNode):string =
+proc renderCondExpr(c:ESNode, indlvl=0):string =
   result = "$1 ? ($2) : ($3)" % [render(c.test), render(c.cconsequent),
     render(c.calternate)]
 
-proc renderCallExpr(c:ESNode):string =
+proc renderCallExpr(c:ESNode, indlvl=0):string =
   result = render(c.callee)&"(" 
   for i,arg in c.arguments:
     add result, render(arg)
@@ -247,7 +254,7 @@ proc renderCallExpr(c:ESNode):string =
       add result, ","
   add result, ")"
 
-proc renderMemberCallExpr(c:ESNode):string =
+proc renderMemberCallExpr(c:ESNode, indlvl=0):string =
   result = &"{render(c.cobj)}.{render(c.objprop)}(" 
   for i,arg in c.args:
     add result, render(arg)
@@ -255,7 +262,7 @@ proc renderMemberCallExpr(c:ESNode):string =
       add result, ","
   add result, ")"
 
-proc renderNewExpr(c:ESNode):string =
+proc renderNewExpr(c:ESNode, indlvl=0):string =
   result = "new $1(" % [render(c.callee)]
   for i,arg in c.arguments:
     add result, render(arg)
@@ -263,7 +270,7 @@ proc renderNewExpr(c:ESNode):string =
       add result, ","
   add result, ")"
 
-proc renderSeqExpr(s:ESNode):string =
+proc renderSeqExpr(s:ESNode, indlvl=0):string =
   for i,ex in s.expressions:
     add result, render(ex)
     if i!=s.expressions.len-1:
@@ -278,14 +285,14 @@ proc render*(en:ESNode, indlvl=0):string =
   result = ""
   # TODO:  add result, renderSourceLoc(en.loc)
   case en.typ:
-  of ekIdentifier: add result, renderIdent(en)
+  of ekIdentifier: add result, renderIdent(en, indlvl)
   of ekStrLit, ekBoolLit, ekNullLit, ekIntLit,
     ekFloatLit, ekRegExpLiteral:
-    add result, renderLit(en)
+    add result, renderLit(en, indlvl)
   of ekProgram:
-    add result, renderProgram(en)
+    add result, renderProgram(en, indlvl)
   of ekModule:
-    add result, renderModule(en)
+    add result, renderModule(en, indlvl)
   of ekFunction,ekFunctionDeclaration,ekFunctionExpression:
     add result, renderFunc(en, indlvl)
   of ekExpressionStatement:
@@ -296,77 +303,77 @@ proc render*(en:ESNode, indlvl=0):string =
     discard
     #add result, renderEmptyStmt(en)
   of ekDebuggerStatement: 
-    add result, renderDebuggerStmt(en)
+    add result, renderDebuggerStmt(en, indlvl)
   of ekWithStatement:
-    add result, renderWithStmt(en)
+    add result, renderWithStmt(en, indlvl)
   of ekReturnStatement:
-    add result, renderReturnStmt(en)
+    add result, renderReturnStmt(en, indlvl)
   of ekLabeledStatement:
     add result, renderLabeledStmt(en, indlvl)
   of ekBreakStatement:
-    add result, renderBreakStmt(en)
+    add result, renderBreakStmt(en, indlvl)
   of ekContinueStatement:
-    add result, renderContinueStmt(en)
+    add result, renderContinueStmt(en, indlvl)
   of ekIfStatement:
     add result, renderIfStmt(en, indlvl)
   of ekSwitchStatement:
-    add result, renderSwitchStmt(en)
+    add result, renderSwitchStmt(en, indlvl)
   of ekSwitchCase:
-    add result, renderSwitchCase(en)
+    add result, renderSwitchCase(en, indlvl)
   of ekThrowStatement:
-    add result, renderThrowStmt(en)
+    add result, renderThrowStmt(en, indlvl)
   of ekTryStatement:
-    add result, renderTryStmt(en)
+    add result, renderTryStmt(en, indlvl)
   of ekCatchClause:
-    add result, renderCatchClause(en)
+    add result, renderCatchClause(en, indlvl)
   of ekWhileStatement:
     add result, renderWhileStmt(en, indlvl)
   of ekDoWhileStatement:
-    add result, renderDoWhileStmt(en)
+    add result, renderDoWhileStmt(en, indlvl)
   of ekForStatement:
-    add result, renderForStmt(en)
+    add result, renderForStmt(en, indlvl)
   of ekForInStatement:
-    add result, renderForInStmt(en)
+    add result, renderForInStmt(en, indlvl)
   of ekVariableDeclaration:
-    add result, renderVarDecl(en)
+    add result, renderVarDecl(en, indlvl)
   of ekVariableDeclarator:
-    add result, renderVarDeclarator(en)
+    add result, renderVarDeclarator(en, indlvl)
   of ekThisExpression:
-    add result, renderThisExpr(en)
+    add result, renderThisExpr(en, indlvl)
   of ekArrayExpression:
-    add result, renderArrayExpr(en)
+    add result, renderArrayExpr(en, indlvl)
   of ekObjectExpression:
-    add result, renderObjExpr(en)
+    add result, renderObjExpr(en, indlvl)
   of ekProperty:
-    add result, renderProperty(en)
+    add result, renderProperty(en, indlvl)
   of ekUnaryExpression:
-    add result, renderUnaryExpr(en)
+    add result, renderUnaryExpr(en, indlvl)
   of ekUpdateExpression:
-    add result, renderUpdateExpr(en)
+    add result, renderUpdateExpr(en, indlvl)
   of ekBinaryExpression:
-    add result, renderBinaryExpr(en)
+    add result, renderBinaryExpr(en, indlvl)
   of ekAssignmentExpression:
-    add result, renderAsgnExpr(en)
+    add result, renderAsgnExpr(en, indlvl)
   of ekLogicalExpression:
-    add result, renderLogicalExpr(en)
+    add result, renderLogicalExpr(en, indlvl)
   of ekMemberExpression:
-    add result, renderMemberExpr(en)
+    add result, renderMemberExpr(en, indlvl)
   of ekConditionalExpression:
-    add result, renderCondExpr(en)
+    add result, renderCondExpr(en, indlvl)
   of ekCallExpression:
-    add result, renderCallExpr(en)
+    add result, renderCallExpr(en, indlvl)
   of ekNewExpression:
-    add result, renderNewExpr(en)
+    add result, renderNewExpr(en, indlvl)
   of ekSequenceExpression:
-    add result, renderSeqExpr(en)
+    add result, renderSeqExpr(en, indlvl)
   of ekEmit:
     add result, en.code
   of ekImport:
-    add result, renderImport(en)
+    add result, renderImport(en, indlvl)
   of ekExport:
-    add result, renderExport(en)
+    add result, renderExport(en, indlvl)
   of ekMemberCallExpression:
-    add result, renderMemberCallExpr(en)
+    add result, renderMemberCallExpr(en, indlvl)
   of ekDefaultCase:
     add result, renderDefaultCase(en, indlvl)
   
