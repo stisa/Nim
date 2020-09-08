@@ -2544,9 +2544,14 @@ proc genMagic(es: ESGen, n: PNode, piece: var ESNode, loc: SourceLocation = nil)
   of mBitnotI:  result = es.genUnaryExpr("~",true, n, piece)
   of mUnaryPlusF64:  result = es.genUnaryExpr("+",true, n, piece)
   of mUnaryMinusF64:  result = es.genUnaryExpr("-",true, n, piece)
-  of mConStrStr:
-    #echo es.config.treeToYaml(n)
-    result = es.genBinaryExpr("+", n, piece)
+  of mConStrStr: # concat strstr
+    echo es.config.treeToYaml(n)
+    #result = es.genBinaryExpr("+", n, piece)
+    result = newArrayExpr()
+    result.elements = newSeq[ESNode](n.len-1)
+    for i, el in n:
+      if i == 0: continue
+      result.elements[i-1] = newUnaryExpr("...", true, es.gen(n[i], piece))
     #[
   of mShlI: 
     if n[1].typ.size <= 4:
@@ -2892,6 +2897,23 @@ proc gen(es: ESGen, n: PNode, piece: var ESNode, loc: SourceLocation = nil): ESN
     result = newArrayExpr()
     for el in n.sons:
       result.add(es.gen(el,piece))
+    
+    if n.typ.kind != tySequence:
+      # a static array, let's make some optimizations
+      # TODO: rewrite magics so they make use of Array mutability
+      # instead of reallocating
+      var mappedarrtype = case n.typ.lastSon.kind
+        of tyInt32, tyInt: "Int32Array"
+        of tyInt8: "Int8Array"
+        of tyInt16: "Int16Array"
+        of tyUInt32, tyUInt: "Uint32Array"
+        of tyUInt8: "Uint8Array"
+        of tyUInt16: "Uint16Array"
+        of tyFloat, tyFloat64: "Float64Array"
+        of tyFloat32: "Float32Array"
+        else: ""
+      if mappedarrtype != "":
+        result = newNewExpr(newESIdent(mappedarrtype), result)
   of nkBracketExpr:
     result = newMemberExpr(es.gen(n[0], piece), es.gen(n[1], piece), false)
   of nkWhileStmt:
