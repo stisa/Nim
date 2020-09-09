@@ -1927,7 +1927,7 @@ type
     when NimStackTraceMsgs:
       frameMsgLen*: int   ## end position in frameMsgBuf for this frame.
 
-when defined(js):
+when defined(js): #and not defined(es):
   proc add*(x: var string, y: cstring) {.asmNoStackFrame.} =
     asm """
       if (`x` === null) { `x` = []; }

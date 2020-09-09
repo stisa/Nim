@@ -27,7 +27,7 @@ proc newWithStatement*(obj:ESNode, body:ESNode, loc:SourceLocation=nil):ESNode =
   result.body = body
 
 proc newReturnStmt*(arg:ESNode,loc:SourceLocation=nil):ESNode =
-  assert arg.isExpression
+  assert arg.isExpression or arg.typ == ekExpressionStatement, $arg.typ
   result = newESNode(ekReturnStatement, loc)
   result.argument = arg
 
@@ -180,7 +180,7 @@ proc newESLiteral*(val:string,loc:SourceLocation=nil):ESNode =
   )
 
 proc newObjTypeDecl*(name: ESNode, exp:bool, fields: varargs[ESNode]): ESNode =
-  # function Car(make, model, year) {
+  # function Car({make, model, year}={make:"Unknwown",model:"Unknown",year:-1}) {
   #     this.make = make;
   #     this.model = model;
   #     this.year = year;
@@ -188,19 +188,18 @@ proc newObjTypeDecl*(name: ESNode, exp:bool, fields: varargs[ESNode]): ESNode =
 
   #TODO: what about reccase obj
   
-  #TODO: assert isident...
+  #TODO: assert isproperty...
 
   var bdy = newBlockStmt()
-
   for field in fields:
     bdy.add(
-      newAsgnExpr("=", newMemberExpr(newThisExpr(), field, computed=true), field)
+      newAsgnExpr("=", newMemberExpr(newThisExpr(), field.key, computed=true), field.key)
     )
 
   result = newESFuncDecl(
     id=name,
     body=bdy,
-    fields,
+    [newObjectExpr(fields)],
     exp
   )
 

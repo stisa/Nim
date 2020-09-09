@@ -43,6 +43,16 @@ elif (defined(nimQuirky) or defined(nimPanics)) and not defined(nimscript):
 
   proc sysFatal(exceptn: typedesc, message: string) {.inline, noreturn.} =
     sysFatal(exceptn, message, "")
+elif defined es:
+  proc sysFatal(exceptn: typedesc, message: string) {.inline, noreturn.} =
+    let ex = new exceptn
+    ex.msg = message
+    raise ex
+
+  proc sysFatal(exceptn: typedesc, message, arg: string) {.inline, noreturn.} =
+    let ex = new exceptn
+    ex.msg = message & arg
+    raise ex
 
 else:
   proc sysFatal(exceptn: typedesc, message: string) {.inline, noreturn.} =

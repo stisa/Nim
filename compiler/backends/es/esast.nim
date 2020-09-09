@@ -267,7 +267,7 @@ proc isStatement*(n:ESNode):bool =
             ekForStatement, ekForInStatement, ekEmit} or n.isDeclaration()
 
 proc isPattern*(n:ESNode):bool =
-  n.typ in {ekIdentifier, ekVariableDeclarator} #es5: only identifier matchs pattern. future: deconstructors etc
+  n.typ in {ekIdentifier, ekVariableDeclarator, ekObjectExpression} #es5: only identifier matchs pattern. future: deconstructors etc
 
 proc isBinaryOp*(op:string):bool = 
   op in ["==", "!=", "===", "!==", "<", "<=", ">", ">=", "<<", ">>", ">>>",
@@ -328,6 +328,7 @@ proc argument*(n: ESNode):ESNode=
 
 proc add*(n: var ESNode, val: ESNode) =
   # TODO: case? also check val typ
+  if val.typ == ekEmptyStatement: return
   if n.typ == ekProgram: 
     if val.isNil: return # TODO: error?
     if val.typ == ekProgram:
@@ -533,7 +534,7 @@ proc newESFuncDecl*(id,body:ESNode, params:openArray[ESNode], exp: bool=false, l
   result = newESNode(ekFunctionDeclaration,loc)
   assert id.typ == ekIdentifier
   assert body.typ == ekBlockStatement
-  for el in params: assert el.isPattern
+  for el in params: assert el.isPattern, $el.typ
   result.fexported = exp
   result.id = id
   result.params = @params

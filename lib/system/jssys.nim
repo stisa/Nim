@@ -57,7 +57,8 @@ when defined es:
     {.emit: [result,"[0] = (new TextEncoder).encode(", num, ".toString());"].}
   proc esAppendArrArr[T](x: var openArray[T], y:openArray[T]) {.asmNoStackFrame, compilerproc.} =
     {.emit: [ x," = [...", x ,", ...", y, "];" ].}
-
+  proc esIsNil(x: pointer):bool {.asmNoStackFrame, compilerproc.} =
+    asm """`result`[0] = `x`[0] == null;"""
 proc nimBoolToStr(x: bool): string {.compilerproc.} =
   if x: result = "true"
   else: result = "false"
@@ -117,13 +118,9 @@ proc auxWriteStackTrace(f: PCallFrame): string =
     add(result, tempFrames[j].procname)
     add(result, "\n")
 
-when defined es:
-  proc rawWriteStackTrace() =
-    {.emit: "console.trace();".}
-  proc getStackTrace*()= rawWriteStackTrace()
-else:
+when true:
   proc rawWriteStackTrace(): string =
-    if framePtr != nil:
+    if not framePtr.isNil:
       result = "Traceback (most recent call last)\n" & auxWriteStackTrace(framePtr)
     else:
       result = "No stack traceback available\n"
@@ -154,22 +151,7 @@ else:
       throw `cbuf`;
     }
     """.}
-when defined es:
-  proc raiseException(e: ref Exception, ename: cstring) {.
-      compilerproc, asmNoStackFrame.} =
-    e.name = ename
-    if excHandler == 0:
-      getStackTrace()
-    when NimStackTrace:
-      rawWriteStackTrace();
-    asm "throw `e`;"
-  
-  proc reraiseException() {.compilerproc, asmNoStackFrame.} =
-    if lastJSError == nil:
-      raise newException(ReraiseDefect, "no exception to reraise")
-    else:
-      asm "throw lastJSError;"
-else:
+when true:
   proc raiseException(e: ref Exception, ename: cstring) {.
       compilerproc, asmNoStackFrame.} =
     e.name = ename

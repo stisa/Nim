@@ -120,10 +120,10 @@ proc mapType(typ: PType): ESTypeKind =
   let t = skipTypes(typ, abstractInst)
   case t.kind
   of tyVar, tyRef, tyPtr, tyLent:
-    if skipTypes(t.lastSon, abstractInst).kind in MappedToObject:
-      result = etyObject
-    else:
-      result = etyBaseIndex
+    #if skipTypes(t.lastSon, abstractInst).kind in MappedToObject:
+    #  result = etyObject
+    #else:
+    result = etyBaseIndex
   of tyPointer:
     # treat a tyPointer like a typed pointer to an array of bytes
     result = etyBaseIndex
@@ -190,8 +190,9 @@ proc mangleName(es: ESGen, s: PSym): string =
           x.add("HEX" & toHex(ord(c), 2))
         inc i
       result = x
-  # disambiguation may be needed for procs
-  result &= "_" & $s.id
+  # disambiguation if not field
+  if not (s.kind == skField):
+    result &= "_" & $s.id
 
 proc escapeJSString(s: string): string =
   result = newStringOfCap(s.len + s.len shr 2)
@@ -232,8 +233,79 @@ proc genNilLit(es: ESGen, typ: PType): ESNode =
   else:
     result = newESEmitExpr("null")
 
+proc genDefaultLit(es: ESGen, typ: PType): ESNode =
+    # etyNone,                  # no type
+    # etyNull,                  # null type
+    # etyProc,                  # proc type
+    # etyBool,                  # bool type
+    # etySeq,                   # Nim seq or string type
+    # etyInt,                   # JavaScript's int
+    # etyFloat,                 # JavaScript's float
+    # etyString,                # JavaScript's string
+    # etyObject,                # JavaScript's reference to an object
+    # etyBaseIndex              # base + index needed
+  if isEmptyType(typ):
+    echo es.config.typeToYaml(typ)
+    translError(es, "isEmptyType")
+  case mapType(typ)
+  of etyNull:
+    result = es.genNilLit(typ)
+  of etyProc:
+    result = newESEmitExpr("null")
+  of etyBool:
+    result = newESLiteral(false)
+  of etySeq:
+    result = newArrayExpr()
+  of etyInt:
+    result = newESLiteral(0)
+  of etyFloat:
+    result = newESLiteral(0.0)
+  of etyString:
+    result = newESRawStr("")
+  of etyObject:
+    result = newObjectExpr()
+  of etyBaseIndex:
+    result = newArrayExpr([newESEmitExpr("null"), newESLiteral(0)])
+  else:
+    echo es.config.typeToYaml(typ)
+    translError(es, "etyNone literal")
+  
+  
+proc genObjTypeInfo(es: ESGen, t: PType, stmntbody: var ESNode, loc: SourceLocation = nil) : ESNode=
+  ## type A = object
+  ##   x: string
+  ## becomes
+  ## function A(x){
+  ##   this.x = x
+  ##   return this
+  ## }
+  # https://nim-lang.org/docs/macros.html#statements-type-section
+  var fields : seq[ESNode] = @[]
+  #echo es.config.typeToYaml(t)
+  var tt = t
+  if tt.isException:
+    assert(tt != nil)
+
+    tt = tt.skipTypes(abstractInst)
+    while tt.kind == tyObject:
+      if tt.sym != nil and tt.sym.magic == mException: break
+      if tt[0] == nil: break
+      tt = skipTypes(tt[0], abstractPtrs)
+  if tt.isNil: translError(es, "genObjtype" & $t.kind)
+  
+  for i, reclst in tt.n:
+    #echo es.config.treeToYaml(reclst)
+    fields.add(newProperty(es.gen(reclst, stmntbody), es.genDefaultLit(reclst.typ)))
+  newObjTypeDecl(newESIdent(es.mangleName(t.sym)), t.sym.exportOrUsed, fields)
+
+
 proc genSym(es: ESGen, s: PSym, noDeref = false): ESNode =
-  if s.loc.storage == OnHeap and not noDeref:
+  if s.kind == skType:
+    #echo es.config.symToYaml(s)
+    if not es.graph.backend.ESBackend.generatedTypeInfos.containsOrIncl(s.id):
+        es.graph.backend.ESBackend.ast.add(es.genObjTypeInfo(s.typ, es.graph.backend.ESBackend.ast))
+    result = newESIdent(es.mangleName(s.typ.sym))
+  elif s.loc.storage == OnHeap and not noDeref:
     echo es.mangleName(s), " ",s.typ.kind
     result = newMemberExpr(
       newESIdent(es.mangleName(s), s.typ.typeToString), 
@@ -247,10 +319,13 @@ proc genProc(es: ESGen, prc: PSym) =
   var bdy = newBlockStmt()
   if not res.isNil:
     res.sym.loc.storage = OnHeap
+    let rt = prc.getReturnType
+    #echo "RT::"
+    #echo es.config.typeToYaml(rt)
     bdy.add(
       newVarDecl(esLet, false,
         [newVarDeclarator(
-          newESIdent(es.mangleName(res.sym), res.typ.typeToString), newArrayExpr([es.genNilLit(res.typ)])
+          newESIdent(es.mangleName(res.sym), res.typ.typeToString), newArrayExpr([es.genDefaultLit(rt)])
         )]
       )
     )
@@ -379,7 +454,9 @@ proc magicToProc(magic: TMagic): string =
   of mFloatToStr: "esNimFloatToNimStr"
   of mCStrToStr: "esNimStrToJsStr"
   of mNewString: "esNewString"
+  of mIsNil: "esIsNil"
   else:  ""
+    
 
 proc genCall(es: ESGen, n: PNode, stmntbody: var ESNode, loc: SourceLocation = nil) : ESNode=
   if not es.graph.backend.ESBackend.generatedProcs.containsOrIncl(n[0].sym.id):
@@ -417,7 +494,9 @@ proc genEcho(es: ESGen, n: PNode, stmntbody: var ESNode): ESNode =
     
   
 proc genMagicCall(es: ESGen, n: PNode, stmntbody: var ESNode, loc: SourceLocation = nil) : ESNode=
-  let esid = es.prepareMagic(magicToProc(n[0].sym.magic))
+  let jsmagic = magicToProc(n[0].sym.magic)
+  if jsmagic == "": translError es, n, "JSMagic" & $n[0].sym.magic
+  let esid = es.prepareMagic(jsmagic)
   var args = newSeq[ESNode]()
   for i, arg in n:
     if i == 0: continue
@@ -452,6 +531,21 @@ proc genMagic(es: ESGen, n: PNode, stmntbody: var ESNode, loc: SourceLocation = 
   of mIntToStr, mInt64ToStr, mFloatToStr, mBoolToStr, mCharToStr, mCStrToStr, 
     mNewString, #[mAppendStrStr, mAppendStrCh, mAppendSeqElem]#: 
     result = es.genMagicCall(n, stmntbody)
+  of mNew:
+    #echo "MNEW"
+    #echo es.config.treeToYaml(n)
+    if n.lastSon.sym.kind == skLet:
+      result = newAsgnExpr("=", 
+        es.gen(n.lastSon, stmntbody),
+        newNewExpr(newESIdent(es.mangleName(n[1].typ.skipTypes({tyRef}).sym)))
+      )
+    else:
+      result = newAsgnExpr("=", 
+        newMemberExpr(es.gen(n.lastSon, stmntbody),newESLiteral(0),false),
+        newNewExpr(newESIdent(es.mangleName(n[1].typ.skipTypes({tyRef}).sym)))
+      )
+
+  
   of mAppendStrStr: 
     result = newAsgnExpr( "=",
       es.gen(n[1], stmntbody),
@@ -511,13 +605,15 @@ proc genMagic(es: ESGen, n: PNode, stmntbody: var ESNode, loc: SourceLocation = 
   of mUnaryPlusF64:  result = es.genUnaryExpr("+",true, n, stmntbody)
   of mUnaryMinusF64:  result = es.genUnaryExpr("-",true, n, stmntbody)
   of mConStrStr: # concat strstr
-    echo es.config.treeToYaml(n)
+    #echo es.config.treeToYaml(n)
     #result = es.genBinaryExpr("+", n, stmntbody)
     result = newArrayExpr()
     result.elements = newSeq[ESNode](n.len-1)
     for i, el in n:
       if i == 0: continue
       result.elements[i-1] = newUnaryExpr("...", true, es.gen(n[i], stmntbody))
+  of mIsNil:
+    result = es.genMagicCall(n, stmntbody)
     #[
   of mShlI: 
     if n[1].typ.size <= 4:
@@ -689,24 +785,12 @@ proc genAsgn(es: ESGen, lhs, rhs: PNode, stmntbody: var ESNode, loc: SourceLocat
     newAsgnExpr("=", es.gen(lhs, stmntbody), es.gen(rhs, stmntbody))
   )
 
-proc genObjTypeInfo(es: ESGen, t: PType, stmntbody: var ESNode, loc: SourceLocation = nil) : ESNode=
-  # https://nim-lang.org/docs/macros.html#statements-type-section
-  var fields : seq[ESNode] = @[]
-  for i, reclst in t.n:
-    #echo es.config.treeToYaml(reclst)
-    fields.add(es.gen(reclst, stmntbody))
-  newObjTypeDecl(newESIdent(t.sym.name.s), t.sym.exportOrUsed, fields)
-
 proc genObjConstrCall(es: ESGen, n: PNode, stmntbody: var ESNode, loc: SourceLocation = nil) : ESNode=
-  ## type A = object
-  ##   x: string
-  ## becomes
-  ## function A(x){
-  ##   this.x = x
-  ##   return this
-  ## }
+
   #echo es.config.treeToYaml(n)
   if n[0].kind != nkSym:
+    echo "GOBJC", n.typ.typeToString
+    echo es.config.treeToYaml(n)
     var props = newSeq[ESNode]()
     for i,p in n:
       if i == 0: continue
@@ -721,9 +805,9 @@ proc genObjConstrCall(es: ESGen, n: PNode, stmntbody: var ESNode, loc: SourceLoc
     for i, arg in n:
       # arg is exprcolonexpr, don't care about name tho
       if i == 0: continue
-      args.add(es.gen(arg[1], stmntbody))
+      args.add(newProperty(es.gen(arg[0],stmntbody), es.gen(arg[1],stmntbody)))
     result = newNewExpr(
-      newESIdent(n[0].sym.name.s), args
+      newESIdent(es.mangleName(n[0].sym)), [newObjectExpr(args)]
     )
 
 proc genTupleConstr(es: ESGen, n: PNode, stmntbody: var ESNode, loc: SourceLocation = nil): ESNode =
@@ -732,7 +816,7 @@ proc genTupleConstr(es: ESGen, n: PNode, stmntbody: var ESNode, loc: SourceLocat
   ## becomes
   ## let x = [{"x":1,"y":2,"0":1,"1":2}] # TODO: avoid duplacting fields
   ## const y = {"0":1,"1":2}
-  echo es.config.treeToYaml(n)
+  #echo es.config.treeToYaml(n)
   var props = newSeq[ESNode]()
   if n[0].kind == nkExprColonExpr: # a named tuple
     for i, p in n:
@@ -771,7 +855,7 @@ proc genOfBranch(es: ESGen, n: PNode, stmntbody: var ESNode, loc: SourceLocation
       )
     )
 proc genOfMultiBranch(es: ESGen, n: PNode, stmntbody: var ESNode, loc: SourceLocation= nil): seq[ESNode] =
-  echo es.config.treeToYaml(n)
+  #echo es.config.treeToYaml(n)
   result = @[]
   for i, cl in n:
     if i != n.len-1:
@@ -834,7 +918,7 @@ proc genLit(es: ESGen, n: PNode, stmntbody: var ESNode, loc: SourceLocation = ni
     else:
       result = newESLiteral(n.intVal)
   of nkNilLit:
-    result = es.genNilLit(n.typ)
+    result = es.genDefaultLit(n.typ)
   of nkStrLit..nkTripleStrLit:
     result = newESLiteral(n.strVal)
   of nkFloatLit..nkFloat64Lit:
@@ -845,7 +929,7 @@ proc genLit(es: ESGen, n: PNode, stmntbody: var ESNode, loc: SourceLocation = ni
 
 
 proc genCallOrMagic(es: ESGen, n: PNode, stmntbody: var ESNode, loc: SourceLocation = nil): ESNode =
-  echo "SYMID: ", n[0].sym.id, " name ", mangleName(es, n[0].sym)
+  echo "SYMID: ", n[0].sym.id, " name ", mangleName(es, n[0].sym), " magic ", n[0].sym.magic
   if (n[0].kind == nkSym) and (n[0].sym.magic != mNone):
     if isEmptyType(n.typ):  # a magic call stmt
       result = newExpressionStmt(genMagic(es, n, stmntbody))
@@ -867,7 +951,7 @@ proc genVar(es: ESGen, n: PNode, stmntbody: var ESNode, loc: SourceLocation = ni
       result.add(
         newVarDecl(
           esLet, v[0].sym.exportOrUsed and v[0].sym.owner.kind == skModule,
-          [newVarDeclarator(newESIdent(mangleName(es,v[0].sym), v[0].sym.typ.typeToString), newArrayExpr([ es.genNilLit(v[0].sym.typ) ]))]
+          [newVarDeclarator(newESIdent(mangleName(es,v[0].sym), v[0].sym.typ.typeToString), newArrayExpr([ es.genDefaultLit(v[0].sym.typ) ]))]
         )
       )
     else:
@@ -921,8 +1005,23 @@ proc genBracket(es: ESGen, n: PNode, stmntbody: var ESNode, loc: SourceLocation 
     if mappedarrtype != "":
       result = newNewExpr(newESIdent(mappedarrtype), result)
 
+
+proc genCurly(es: ESGen, n: PNode, stmntbody: var ESNode, loc: SourceLocation = nil): ESNode =  
+  result = newArrayExpr()
+  for el in n.sons:
+    if el.kind == nkRange:
+      let span = el[1].intVal - el[0].intVal
+      let base = el[0].intVal
+      for j in 0..span:
+        result.add(newESLiteral(j))
+    else:
+      result.add(es.gen(el,stmntbody))
+  
+  result = newNewExpr(newESIdent("Set"), result)
+  
+
 proc genBracketExpr(es: ESGen, n: PNode, stmntbody: var ESNode, loc: SourceLocation = nil): ESNode =
-  echo es.config.treeToYaml(n)
+  #echo es.config.treeToYaml(n)
   result = newMemberExpr(es.gen(n[0], stmntbody), es.gen(n[1], stmntbody), false)
 
 proc genWhileLoopStmt(es: ESGen, n: PNode, stmntbody: var ESNode, loc: SourceLocation = nil): ESNode =
@@ -963,9 +1062,10 @@ proc genAddr(es: ESGen, n: PNode, stmntbody: var ESNode, loc: SourceLocation = n
 proc genDeref(es: ESGen, n: PNode, stmntbody: var ESNode, loc: SourceLocation = nil): ESNode =
   let ident = es.gen(n[0], stmntbody)
   result = newMemberExpr(
-    newMemberExpr(ident, newESLiteral(0), false),
-    newMemberExpr(ident, newESLiteral(1), false),
-    false
+    ident,
+    #newMemberExpr(ident, newESLiteral(0), false),
+    newMemberExpr(ident, newESLiteral(1), false), 
+    false 
   )
 
 proc genIfStmt(es: ESGen, n: PNode, stmntbody: var ESNode, loc: SourceLocation = nil): ESNode =
@@ -986,6 +1086,7 @@ proc genIfStmt(es: ESGen, n: PNode, stmntbody: var ESNode, loc: SourceLocation =
       )
 
 proc genDotExpr(es: ESGen, n: PNode, stmntbody: var ESNode, loc: SourceLocation = nil): ESNode =
+  echo "DOTEXPR"
   echo es.config.treeToYaml(n)
   result = newMemberExpr(
     es.gen(n[0],stmntbody), es.gen(n[1],stmntbody), true
@@ -1006,8 +1107,8 @@ proc genPragma(es: ESGen, n: PNode, stmntbody: var ESNode, loc: SourceLocation =
       else: discard
     result = newESEmitExpr(emitstr)
   else: 
-    echo es.config.treeToYaml(n)
-    translError(es, n, "unhandled pragma")
+    message(es.config, n.info, warnUser, "maybe unhandled pragma")
+    result = newEmptyStmt()
 
 proc genAsm(es: ESGen, n: PNode, stmntbody: var ESNode, loc: SourceLocation = nil): ESNode =
   var emitstr: string = ""
@@ -1023,14 +1124,21 @@ proc genAsm(es: ESGen, n: PNode, stmntbody: var ESNode, loc: SourceLocation = ni
 
 proc genRaise(es: ESGen, n: PNode, stmntbody: var ESNode, loc: SourceLocation = nil): ESNode =
   let id = es.prepareMagic("raiseException")
-  result = newCallExpr(id, es.gen(n[0],stmntbody))
+  echo "GENRAISE"
+  echo es.config.typeToYaml(n[0].typ.skipTypes(skipPtrs))
+  result = newCallExpr(id, [es.gen(n[0],stmntbody), newESRawStr(n[0].typ.skipTypes(skipPtrs).sym.name.s)])
 
 proc genStringToCString(es: ESGen, n: PNode, stmntbody: var ESNode, loc: SourceLocation = nil): ESNode =
   let id = es.prepareMagic("esNimStrToJsStr")
   result = newCallExpr(id, es.gen(n[0],stmntbody))
 
 proc genReturnStmt(es: ESGen, n: PNode, stmntbody: var ESNode, loc: SourceLocation = nil): ESNode =
-  result = newReturnStmt(es.gen(n[1], stmntbody))
+  #echo "RNTMNR"
+  if n[0].kind == nkAsgn:
+    #echo es.config.treeToYaml(n)
+    result = newBlockStmt(es.gen(n[0], stmntbody))
+  else:
+    result = newReturnStmt(es.gen(n[0], stmntbody))
 
 proc genConv(es: ESGen, n: PNode, stmntbody: var ESNode, loc: SourceLocation = nil): ESNode =
   result = es.gen(n[1], stmntbody)#TODO: figure out conv of non basic types?
@@ -1039,13 +1147,13 @@ proc gen(es: ESGen, n: PNode, stmntbody: var ESNode, loc: SourceLocation = nil):
   echo "# gen: ", $n.kind, " module: ", es.config.toFilename(n.info.fileIndex)
   echo "# working on: ", n.kind
   if not (n.kind == nkStmtList):
-    echo renderTree(n)
+    echo renderTree(n, {renderNoComments, renderIr})
     
   case n.kind:
   of nkGenSkippedKinds: result = newEmptyStmt() # returns ';'
   of nkSym:
     result = es.genSym(n.sym)
-  of nkLiterals:
+  of nkLiterals, nkNilLit:
     result = es.genLit(n, stmntbody)
   of nkCallKinds:
     result = es.genCallOrMagic(n, stmntbody)
@@ -1099,13 +1207,16 @@ proc gen(es: ESGen, n: PNode, stmntbody: var ESNode, loc: SourceLocation = nil):
     result = es.genStringToCString(n, stmntbody)
   of nkReturnStmt:
     result = es.genReturnStmt(n, stmntbody)
+  of nkCurly:
+    result = es.genCurly(n, stmntbody)
   else: 
     echo es.config.treeToYaml(n)
     translError(es, n, "gen: unknown node kind")
 
+  if result.isNil:
+    echo "Generated NIL ESNode: ", n.kind
   #[
   of nkClosure:
-  of nkCurly:
   of nkPar:
   of nkHiddenStdConv, nkHiddenSubConv, nkConv:
   of nkCheckedFieldExpr:
@@ -1133,15 +1244,19 @@ proc myProcess(b: PPassContext, n: PNode): PNode =
   if m.module == nil: internalError(m.config, n.info, "esgen:myProcess")
   let es = ESBackend(m.graph.backend)
   
-  if es.ast.mname notin toFilename(m.config, n.info): return # FIXME: this skippes everything not coming from mainmodule
+  #if es.ast.mname notin toFilename(m.config, n.info): return # FIXME: this skippes everything not coming from mainmodule
   var transfN = transformStmt(m.graph,m.module,n)
   if transfN.kind in nkGenSkippedKinds: return
-
+  var tmp : ESNode
   if not (transfN.kind == nkStmtList):
-    es.ast.add(m.gen(transfN, es.ast))
+    tmp = m.gen(transfN, es.ast)
+    if not tmp.isNil and not (tmp.typ == ekEmptyStatement):
+      es.ast.add(tmp)
   else:
     for stmt in transfN:
-      es.ast.add(m.gen(stmt, es.ast))
+      tmp = m.gen(stmt, es.ast)
+      if not tmp.isNil and not (tmp.typ == ekEmptyStatement):
+        es.ast.add(tmp)
 
 proc myClose(graph: ModuleGraph; b: PPassContext, n: PNode): PNode =
   if passes.skipCodegen(graph.config, n): return n

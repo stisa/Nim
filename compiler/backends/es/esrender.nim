@@ -56,11 +56,22 @@ proc renderVarDeclarator(v:ESNode, indlvl=0):string =
   else:
     result = fmt"{render(v.vid)} /**/ = {render(v.vinit)}"
 
+proc renderParamProperty(p:ESNode, indlvl=0):string =
+  result = "$1 = $2" % [render(p.key), render(p.value)]
+
 proc renderParam(p: ESNode, indlvl=0): string =
   if p.typ == ekIdentifier:
     result = &"{p.name} /*{p.ptyp}*/" 
   elif p.typ == ekVariableDeclarator:
     result = renderVarDeclarator(p)
+  elif p.typ == ekObjectExpression:
+    result = "{"
+    for i,prop in p.properties:
+      add result, renderParamProperty(prop)
+      if i != p.properties.len-1:
+        add result, ", "
+      else:
+        add result, "}={}" #FIXME: move ={} to the ast?
   else:
     assert(p.isPattern, $p.typ)
 
@@ -68,7 +79,7 @@ proc renderFunc(f:ESNode, indlvl=0):string =
   result = if f.fexported: "export " else: ""
   result &= &"function {render(f.id)}("
   for i,par in f.params:
-    add result, renderParam par
+    add result, renderParam(par,indlvl)
     if i!=f.params.len-1: add result , ", "
   add result, ") {\n$1\n} /*$2*/" % [render(f.body).indent(indlvl+2), f.id.ptyp]
 
@@ -200,8 +211,7 @@ proc renderArrayExpr(a:ESNode, indlvl=0):string =
     add result, render(el)
     if i != a.elements.len-1:
       add result, ", "
-    else:
-      add result, "]"
+  add result, "]"
 
 proc renderObjExpr(o:ESNode, indlvl=0):string = 
   result = "{"
@@ -209,8 +219,7 @@ proc renderObjExpr(o:ESNode, indlvl=0):string =
     add result, render(prop)
     if i != o.properties.len-1:
       add result, ", "
-    else:
-      add result, "}"
+  add result, "}"
 
 proc renderProperty(p:ESNode, indlvl=0):string =
   result = "\"$1\" : $2" % [render(p.key), render(p.value)]
@@ -282,9 +291,9 @@ proc renderRawStr(en: ESNode, indlvl=0): string =
 proc render*(en:ESNode, indlvl=0):string =
   if en.isNil: 
     when defined debug:
-      return "/*ESNode is nil*/"
+      return fmt"/*An ESNode is nil*/"
     else:
-      return "fuck"
+      {.warning: "An ESNode is nil".}
   result = ""
   # TODO:  add result, renderSourceLoc(en.loc)
   case en.typ:
