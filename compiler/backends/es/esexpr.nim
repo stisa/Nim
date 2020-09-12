@@ -27,7 +27,7 @@ proc newProperty*(k,val:ESNode,kind:string="", loc:SourceLocation=nil):ESNode =
 
 proc newUnaryExpr*(op:string, prefix:bool,arg:ESNode,loc:SourceLocation=nil):ESNode =
   assert op.isUnaryOp, op
-  assert arg.isExpression
+  assert arg.isExpression, $arg.typ
 
   result = newESNode(ekUnaryExpression,loc)
   result.unoperator = op

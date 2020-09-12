@@ -170,15 +170,6 @@ proc newVarDeclarator*(id, init:ESNode, loc:SourceLocation=nil):ESNode =
   else:
     result.vinit = newESLiteral()
 
-proc newESLiteral*(val:string,loc:SourceLocation=nil):ESNode =
-  var kind = ekStrLit
-  result = newESNode(kind,loc)
-  result.value = newMemberCallExpr(
-    newESIdent("(new TextEncoder)"), 
-    newESIdent("encode"),
-    newESEmitExpr(val.escape)
-  )
-
 proc newObjTypeDecl*(name: ESNode, exp:bool, fields: varargs[ESNode]): ESNode =
   # function Car({make, model, year}={make:"Unknwown",model:"Unknown",year:-1}) {
   #     this.make = make;

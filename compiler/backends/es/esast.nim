@@ -61,7 +61,6 @@ type
     ekImport
 
     # --v-- Non standard --v--
-    ekRawStr
     ekStrLit
     ekBoolLit
     ekNullLit
@@ -91,7 +90,7 @@ type
       name*: string # May be Expression or Pattern ?
       ptyp*: string 
     of ekStrLit:
-      strval*: ESNode
+      strval*: string
     of ekBoolLit:
       bval*: bool
     of ekNullLit:
@@ -237,12 +236,10 @@ type
       args*: seq[ESNode]
     of ekSequenceExpression:
       expressions*: seq[ESNode] # expression
-    of ekRawStr:
-      rawstr*: string
-
+    
 # These procs are used in place of interfaces
 proc isLiteral*(n:ESNode):bool =
-  n.typ in {ekBoolLit,ekFloatLit,ekIntLit,ekStrLit, ekRawStr, ekNullLit,ekRegExpLiteral}
+  n.typ in {ekBoolLit,ekFloatLit,ekIntLit,ekStrLit, ekNullLit,ekRegExpLiteral}
 
 proc isExpression*(n:ESNode):bool =
   n.typ in {ekIdentifier, ekThisExpression, ekArrayExpression, ekObjectExpression,
@@ -299,12 +296,12 @@ proc `value=`*(lit: var ESNode, val: SomeInteger) =
   assert(lit.typ == ekIntLit)
   lit.ival = val
 proc `value=`*(prop: var ESNode, val: ESNode) =
-  if prop.typ == ekProperty:
-    prop.pvalue = val
-  elif prop.typ == ekStrLit:
-    prop.strval = val
-  else:
-    echo "value= error"
+  assert prop.typ == ekProperty, $prop.typ
+  prop.pvalue = val
+
+proc `value=`*(lit: var ESNode, val: string) =
+  assert lit.typ == ekStrLit
+  lit.strval = val
 
 proc value*(prop: ESNode): ESNode = prop.pvalue
 
@@ -490,7 +487,7 @@ proc newESIdent*(name:string, typ: string, loc:SourceLocation=nil):ESNode =
   result.ptyp = typ
   result.name = name
 
-proc newESLiteral*[T: SomeNumber|bool|char](val:T,loc:SourceLocation=nil):ESNode =
+proc newESLiteral*[T: SomeNumber|bool|char|string](val:T,loc:SourceLocation=nil):ESNode =
   var kind : ESNodeKind
   if T is bool:
     kind = ekBoolLit
@@ -500,6 +497,8 @@ proc newESLiteral*[T: SomeNumber|bool|char](val:T,loc:SourceLocation=nil):ESNode
     kind = ekIntLit
   elif T is char:
     kind = ekIntLit
+  elif T is string:
+    kind = ekStrLit
   result = newESNode(kind,loc)
   result.value = val
 
@@ -543,7 +542,3 @@ proc newESFuncDecl*(id,body:ESNode, params:openArray[ESNode], exp: bool=false, l
 proc newESEmitExpr*(code:string, loc:SourceLocation=nil):ESNode =
   result = newESNode(ekEmit, loc)
   result.code = code
-
-proc newESRawStr*(str: string, loc: SourceLocation=nil): ESNode =
-  result = newESNode(ekRawStr, loc)
-  result.rawstr = str
