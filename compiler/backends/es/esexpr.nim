@@ -113,14 +113,14 @@ proc newCallExpr*(callee:ESNode, args:varargs[ESNode],loc:SourceLocation=nil):ES
 
 proc newNewExpr*(callee:ESNode, args:varargs[ESNode],loc:SourceLocation=nil):ESNode =
   assert callee.isExpression
-  for a in args: assert a.isExpression
+  for a in args: assert a.isExpression, $a.typ
 
   result = newESNode(ekNewExpression,loc)
   result.callee = callee
   result.arguments = @args
 
 proc newSequenceExpr*(exprs:varargs[ESNode],loc:SourceLocation=nil):ESNode =
-  for s in exprs: assert s.isExpression
+  for s in exprs: assert s.isExpression, $s.typ
 
   result = newESNode(ekSequenceExpression,loc)
   result.expressions = @exprs

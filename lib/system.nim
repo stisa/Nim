@@ -1927,7 +1927,7 @@ type
     when NimStackTraceMsgs:
       frameMsgLen*: int   ## end position in frameMsgBuf for this frame.
 
-when defined(js): #and not defined(es):
+when defined(js) and not defined(es):
   proc add*(x: var string, y: cstring) {.asmNoStackFrame.} =
     asm """
       if (`x` === null) { `x` = []; }
@@ -1938,7 +1938,15 @@ when defined(js): #and not defined(es):
       }
     """
   proc add*(x: var cstring, y: cstring) {.magic: "AppendStrStr".}
-
+elif defined es:
+  proc add*(x: var string, y: cstring) =
+    
+    let initialLen = x.len
+    x.setLen(x.len+y.len)
+    var i = 0
+    while i<y.len:
+      x[initialLen+i] = char(uint8(y[i]))
+      inc i
 elif hasAlloc:
   {.push stackTrace: off, profiler: off.}
   proc add*(x: var string, y: cstring) =

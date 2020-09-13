@@ -3,7 +3,7 @@ import strutils
 # Statements and declarations
 
 proc newExpressionStmt*(expression:ESNode, loc:SourceLocation=nil): ESNode =
-  assert(expression.isExpression)
+  assert(expression.isExpression, $expression.typ)
   result = newESNode(ekExpressionStatement,loc)
   result.expression = expression
 

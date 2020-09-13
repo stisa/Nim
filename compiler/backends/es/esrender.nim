@@ -23,7 +23,7 @@ proc renderLit*(lit:ESNode, indlvl=0):string =
       else: result = "-Infinity"
     else: result = $f
   of ekIntLit: result = $lit.ival
-  of ekStrLit: result = lit.strval
+  of ekStrLit: result = "\"" & lit.strval & "\""
   of ekNullLit: result = "null"
   else:
     assert false, "not a literal " & $lit.typ

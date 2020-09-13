@@ -46,21 +46,24 @@ when defined es:
   # an ident when going through emit
   # the [0] is because var in js are boxed in arrays: [val]
   proc esNimStrLit(c: cstring): string {.compilerproc, asmNoStackFrame.} =
-    {.emit: [result, "[0] = [...(new TextEncoder).encode(", c, ")]"].}
+    {.emit: [result, " = [...(new TextEncoder).encode(", c, ")]"].}
   proc esNimStrToJsStr(c: string): cstring {.compilerproc, asmNoStackFrame.} =
-    {.emit: [result, "[0] = (new TextDecoder).decode(new Uint8Array(", c, "))"].}
+    {.emit: [result, " = (new TextDecoder).decode(new Uint8Array(", c, "))"].}
   proc esNewString(len: int): string {.asmNoStackFrame, compilerproc.} =
-    {.emit: [result,"[0] = new Array(",len,");"].}
+    {.emit: [result," = new Array(",len,");"].}
   proc esNewSeq(len: int): seq {.asmNoStackFrame, compilerproc.} =
-    {.emit: [result,"[0] = new Array(",len,");"].}
+    {.emit: [result," = new Array(",len,");"].}
   proc esNimFloatToNimStr(num: float): string {.asmNoStackFrame, compilerproc.} =
     {.emit: ["if (Number.isInteger(", num,")) {\n  return [...(new TextEncoder).encode(",num," + '.0')];\n} else {\n  return [...(new TextEncoder).encode(",num,".toString())];\n}"].}
   proc esNimIntToNimStr(num: int): string {.asmNoStackFrame, compilerproc.} =
-    {.emit: [result,"[0] = [...(new TextEncoder).encode(", num, ".toString())];"].}
+    {.emit: [result," = [...(new TextEncoder).encode(", num, ".toString())];"].}
   proc esAppendArrArr[T](x: var openArray[T], y:openArray[T]) {.asmNoStackFrame, compilerproc.} =
-    {.emit: [ x,"[0].push.apply(", y, ");" ].}
+    {.emit: [ x,".push.apply(", y, ");" ].}
+  proc esAddr(d: proc(x:int), a: proc():int): ptr int {.compilerproc.} =
+    asm """`result` = { get deref() { return `d`(); }, set deref(v) { `a`(v); } };"""
   proc esIsNil(x: pointer):bool {.asmNoStackFrame, compilerproc.} =
-    asm """`result`[0] = `x`[0] == null;""" #""" this comment fixes syntax highlighting
+    result = x == nil
+    #asm "`result` = `x` == null; //TODO: this needs help by deref" #"""
 
 proc nimBoolToStr(x: bool): string {.compilerproc.} =
   if x: result = "true"
@@ -813,4 +816,4 @@ if (!Math.trunc) {
   };
 }
 """
-when not defined(nodejs): {.emit: jsMathTrunc .}
+when not defined(nodejs) and not defined es: {.emit: jsMathTrunc .}
