@@ -37,7 +37,10 @@ type
 var
   framePtr {.importc, nodecl, volatile.}: PCallFrame
   excHandler {.importc, nodecl, volatile.}: int = 0
-  lastJSError {.importc, nodecl, volatile.}: PJSError = nil
+when not defined es:
+  var lastJSError {.importc, nodecl, volatile.}: PJSError = nil
+else:
+  var lastJSError {.exportc, nodecl, volatile.}: PJSError = nil
 
 {.push stacktrace: off, profiler:off.}
 
@@ -64,6 +67,13 @@ when defined es:
   proc esIsNil(x: pointer):bool {.asmNoStackFrame, compilerproc.} =
     result = x == nil
     #asm "`result` = `x` == null; //TODO: this needs help by deref" #"""
+  proc nimExcToJsErr(e: Exception): PJSError {.compilerproc.} =
+    asm """
+    let jse = new Error()
+    jse.message = esNimStrToJsStr(`e`.msg)
+    jse.name = `e`.name
+    return jse
+    """
 
 proc nimBoolToStr(x: bool): string {.compilerproc.} =
   if x: result = "true"
@@ -76,8 +86,13 @@ proc nimCharToStr(x: char): string {.compilerproc.} =
 proc isNimException(): bool {.asmNoStackFrame.} =
   asm "return `lastJSError` && `lastJSError`.m_type;"
 
-proc getCurrentException*(): ref Exception {.compilerRtl, benign.} =
-  if isNimException(): result = cast[ref Exception](lastJSError)
+when defined es:
+  proc getCurrentException*(): ref Exception {.compilerRtl, benign.} =
+    asm "`result` =  lastJSError;"
+
+else:
+  proc getCurrentException*(): ref Exception {.compilerRtl, benign.} =
+    if isNimException(): result = cast[ref Exception](lastJSError)
 
 proc getCurrentExceptionMsg*(): string =
   if lastJSError != nil:
@@ -133,7 +148,33 @@ when true:
 
   proc getStackTrace*(): string = rawWriteStackTrace()
   proc getStackTrace*(e: ref Exception): string = e.trace
-
+when defined es:
+  proc unhandledException(e: ref Exception) {.
+      compilerproc, asmNoStackFrame.} =
+    var buf = ""
+    if e.msg.len != 0:
+      add(buf, "Unhandled exception: ")
+      add(buf, e.msg)
+    else:
+      add(buf, "Unhandled exception")
+    add(buf, "\n")
+    when NimStackTrace:
+      add(buf, rawWriteStackTrace())
+    #let cbuf = cstring(buf)
+    framePtr = nil
+    e.msg = buf 
+    {.emit: """
+    throw `e`
+    """.}
+    # {.emit: """
+    # if (typeof(Error) !== "undefined") {
+    #   throw new Error(`cbuf`);
+    # }
+    # else {
+    #   throw `cbuf`;
+    # }
+    # """.}
+else:
   proc unhandledException(e: ref Exception) {.
       compilerproc, asmNoStackFrame.} =
     var buf = ""
@@ -165,7 +206,8 @@ when true:
       unhandledException(e)
     when NimStackTrace:
       e.trace = rawWriteStackTrace()
-    asm "throw `e`;"
+    let jse = nimExcToJsErr(e[])
+    asm "throw `jse`;"
 
   proc reraiseException() {.compilerproc, asmNoStackFrame.} =
     if lastJSError == nil:

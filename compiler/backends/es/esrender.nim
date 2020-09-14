@@ -130,7 +130,7 @@ proc renderIfStmt(i:ESNode, indlvl=0):string =
       if i.ialternate.typ != ekEmptyStatement:
         add result, " else {\n$1\n}" % [render(i.ialternate).indent(indlvl+2)]
     else:
-      add result, " else $1 " % [render(i.ialternate).indent(indlvl+2)]
+      add result, " else $1 " % [render(i.ialternate).indent(indlvl)]
 
 proc renderSwitchCase(c:ESNode, indlvl=0):string =
   result = "\ncase ($1):" % [render(c.test)]
@@ -164,14 +164,14 @@ proc renderThrowStmt(t:ESNode, indlvl=0):string =
   result = "throw $1;" % [render(t.argument)]
 
 proc renderTryStmt(t:ESNode, indlvl=0):string = 
-  result = "try {\n$1 \n} " % [render(t.tblck)]
+  result = "try {\n$1 \n} " % [render(t.tblck, indlvl+2)]
   if not t.thandler.isNil:
-    add result, render(t.thandler)
+    add result, render(t.thandler, indlvl)
   if not t.tfinalizer.isNil:
-    add result, "finally {\n$1\n}" % [render(t.tfinalizer)]
+    add result, " finally {\n$1\n}" % [render(t.tfinalizer, indlvl+2)]
 
 proc renderCatchClause(c:ESNode, indlvl=0):string =
-  result = "catch ($1) {\n$2\n}" % [render(c.cparam), render(c.body)]
+  result = "catch ($1) {\n$2\n}" % [render(c.cparam), render(c.body, indlvl+2)]
 
 proc renderWhileStmt(w:ESNode, indlvl=0):string =
   result = "while ($1) {\n$2\n}" % [render(w.test), render(w.body).indent(indlvl+2)]

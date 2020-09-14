@@ -57,6 +57,7 @@ type
     generatedProcs: IntSet
     generatedTypeInfos: IntSet
     sigConflicts: CountTable[string]
+    tmpcount : Natural
 
   ESTypeKind = enum       # necessary JS "types"
     etyNone,              # no type
@@ -105,6 +106,9 @@ proc exportOrUsed(s: PSym): bool =
     s.skipGenericOwner.flags.contains(sfMainModule) 
   )
 
+proc getAndIncTempCount(es: ESGen): int =
+  result = es.graph.backend.ESBackend.tmpcount
+  inc es.graph.backend.ESBackend.tmpcount
 
 const nkGenSkippedKinds = { nkCommentStmt, nkEmpty, 
                             nkTemplateDef, nkFuncDef, nkProcDef, nkMethodDef, 
@@ -186,6 +190,11 @@ proc mangleName(es: ESGen, s: PSym): string =
         return false
 
   result = s.name.s # TODO cache in loc.r?
+  if  s.flags.contains(sfExportc):
+    if not result.validJsName:
+      message(es.config, s.info, warnUser, "Exported name is not a valid JS identifier")
+    return result # exportc => no mangling
+
   if not result.validJsName:
     # common ones:
     result = result.multiReplace({"=":"eq","+":"plus","-":"minus","*":"star","/":"slash"})
@@ -272,9 +281,8 @@ proc genObjTypeInfo(es: ESGen, t: PType, stmntbody: var ESNode, loc: SourceLocat
     )
   
   result = newObjTypeDecl(
-    newESIdent(es.mangleName(t.sym)), t.sym.exportOrUsed, fields
+    newESIdent(es.mangleName(t.sym)), false#[t.sym.exportOrUsed]#, fields
   )
-
 
 proc genDefaultLit(es: ESGen, typ: PType): ESNode =
   ## Generate a literal with default value for when we do things like
@@ -380,7 +388,7 @@ proc genProc(es: ESGen, prc: PSym) =
   # added directly to the var body passed in, so we store that in
   # trandiscarded and then ignore that
   bdy.add(
-    es.gen(transformBody(es.graph, prc, false), trandiscarded)
+    es.gen(transformBody(es.graph, prc, false), bdy)
   )
   
   if not res.isNil:
@@ -393,7 +401,7 @@ proc genProc(es: ESGen, prc: PSym) =
       newESIdent(mangleName(es, prc), if res.isNil: "" else: resT.typeToString),
       bdy,
       params,
-      card(prc.flags*{sfExported, sfExportc}) > 0
+      card(prc.flags*{sfExported, sfExportc}) > 0 and (prc.owner.kind == skModule)
     )
   )
 
@@ -853,13 +861,29 @@ proc genObjConstrCall(es: ESGen, n: PNode, stmntbody: var ESNode, loc: SourceLoc
 
   #echo es.config.treeToYaml(n)
   if n[0].kind != nkSym: # ie a nkPar, eg (ref ValueError)(msg: "wrong value")
+    let baseT = n[0].typ.skipTypes(skipPtrs)
+    if not es.graph.backend.ESBackend.generatedTypeInfos.containsOrIncl(baseT.sym.id):
+      stmntbody.add(es.genObjTypeInfo(baseT, stmntbody))
     echo "GOBJC", n.typ.typeToString
     echo es.config.treeToYaml(n)
     var props = newSeq[ESNode]()
     for i,p in n:
       if i == 0: continue
       props.add(newProperty(es.gen(p[0],stmntbody), es.gen(p[1],stmntbody)))
-    result = newObjectExpr(props)
+    let addrsym = es.prepareMagic("esAddr")
+    let tmp = "tmp_ref" & $es.getAndIncTempCount
+    stmntbody.add newVarDecl( # TODO fix stmntbody to be parent stmt, not ast
+      esLet,
+      exported = false,
+      [newVarDeclarator(
+        newESIdent(tmp, baseT.typeToString), newNewExpr(
+          newESIdent(es.mangleName(baseT.sym)), [newObjectExpr(props)]
+        ) 
+      )]
+    )
+    result = newESEmitExpr(
+      render(addrsym) & "(() => { return " & tmp & "; }, (v) => { " & tmp & " = v; })"
+    )
   else:
     if not es.graph.backend.ESBackend.generatedTypeInfos.containsOrIncl(n.typ.sym.id):
         stmntbody.add(es.genObjTypeInfo(n.typ, stmntbody))
@@ -1274,7 +1298,7 @@ proc genPragma(es: ESGen, n: PNode, stmntbody: var ESNode, loc: SourceLocation =
 proc genAsm(es: ESGen, n: PNode, stmntbody: var ESNode, loc: SourceLocation = nil): ESNode =
   ## Basically the same as genEmit, but we don't have to search for the emit expression
   var emitstr: string = ""
-  echo es.config.treeToYaml(n)
+  #echo es.config.treeToYaml(n)
   for el in n:
     if el.kind in nkStrKinds: emitstr.add(el.getStr)
     elif el.kind == nkIdent: 
@@ -1298,35 +1322,11 @@ proc genRaise(es: ESGen, n: PNode, stmntbody: var ESNode, loc: SourceLocation = 
   result = newCallExpr(id, [es.gen(n[0],stmntbody), newESLiteral(n[0].typ.skipTypes(skipPtrs).sym.name.s)])
 
 proc genFinally(es: ESGen, n: PNode, stmntbody: var ESNode, loc: SourceLocation = nil): ESNode =
-  result = es.gen(n[0], stmntbody)
-
-proc genExceptBranch(es: ESGen, n: PNode, stmntbody: var ESNode, loc: SourceLocation = nil): ESNode =
-  if n[0].kind == nkType:
-    if n[1].kind == nkStmtListExpr:
-      # search for the symbol to use for the exception
-      let exsym = es.genSym(n[1][0][0][0].sym)
-      var exbody = newBlockStmt()
-      for i,son in n[1]:
-        if i == 0: continue
-        exbody.add(
-          es.gen(son, stmntbody)
-        )
-      result = newCatchClause(
-        exsym,
-        exbody
-      )
-    else:
-      result = newCatchClause(
-        es.genSym(n[0].typ.sym),
-        es.gen(n[1], stmntbody)
-      )
-  #elif n[0].kind == 
+  if n[0].kind == nkStmtList:
+    result = es.gen(n[0], stmntbody)
+    #result.add()
   else:
-    result = newCatchClause(
-      newESIdent("_"),
-      es.gen(n[0], stmntbody)
-    )
-  
+    result = newExpressionStmt(es.gen(n[0], stmntbody))
 
 proc genTryStmt(es: ESGen, n: PNode, stmntbody: var ESNode, loc: SourceLocation = nil): ESNode =
   ## Maps nim try stmt to js try catch
@@ -1335,15 +1335,20 @@ proc genTryStmt(es: ESGen, n: PNode, stmntbody: var ESNode, loc: SourceLocation 
   ## finally -> finally
   ## see https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Statements/try...catch 
   ## at "Conditional Catch Blocks"
-  ## the js exception is called "lastJSError" and it gets assigned to the name
+  ## the js exception is called "currThrownJSExc" and it gets assigned to the name
   ## nim expects (ie `e` in `except ValueError as e`) through `getCurrentException`
+  ## the js exception is assigned to a global, `lastJSError`, and `getCurrentException` returns that.
   #echo "TRYSTMT"
   #echo es.config.treeToYaml(n)
+  #TODO: check what happens when exceptbrach or finally are missing
   var catches = newSeq[ESNode]()
-  
-  var ifcl : ESNode = newEmptyStmt()
+  let nimextojs = es.prepareMagic("nimExcToJsErr")
+  var ifcl : ESNode = newExpressionStmt(
+    newESEmitExpr("throw " & render(nimextojs) & "(currThrownJSExc.deref)")
+  )
 
   for i in countdown(n.len-1,0):
+    # build the exception if branches from the bottom up
     let son = n[i]
     if son.kind == nkExceptBranch: 
       if son[0].kind == nkType:
@@ -1351,12 +1356,11 @@ proc genTryStmt(es: ESGen, n: PNode, stmntbody: var ESNode, loc: SourceLocation 
           # search for the symbol to use for the exception
           #let exsym = es.genSym(son[1][0][0][0].sym)
           #echo es.config.treeToYaml(son)
-          ifcl = newIfStmt(
+          ifcl = newIfStmt( # FIXME: newIfStmt expects a stmt, but if son[0].len == 1 it gets an expression
             newBinaryExpr("instanceof",
-              newESIdent("lastJSError"),
+              newESIdent("currThrownJSExc.deref"),
               es.genSym(son[0].typ.sym)
             ),
-            #exbody sa
             newBlockStmt([
               es.gen(son[1][0], stmntbody),
               es.gen(son[1][1], stmntbody)
@@ -1366,7 +1370,7 @@ proc genTryStmt(es: ESGen, n: PNode, stmntbody: var ESNode, loc: SourceLocation 
         else:
           ifcl = newIfStmt(
             newLogicalExpr("==",
-              newESIdent("lastJSError"),
+              newESIdent("currThrownJSExc.deref"),
               es.genSym(son[0].typ.sym)
             ),            
             es.gen(son[1], stmntbody),
@@ -1374,11 +1378,22 @@ proc genTryStmt(es: ESGen, n: PNode, stmntbody: var ESNode, loc: SourceLocation 
           )
       else:
         # begin here
+        # eg. except:
         ifcl = es.gen(son[0], stmntbody)
-
+  
   result = newTryStmt(
     es.gen(n[0], stmntbody),
-    newCatchClause(newESIdent("lastJSError"), ifcl),
+    newCatchClause(
+      newESIdent("currThrownJSExc"), 
+      newBlockStmt(
+        [newExpressionStmt(newAsgnExpr("=",
+          #es.genSym(es.graph.getSysSym(n.info, "lastJSError")),
+          newESIdent("lastJSError"),
+          newESIdent("currThrownJSExc")
+        )),
+        ifcl
+      ])
+    ),
     if n[^1].kind == nkFinally: es.genFinally(n[^1], stmntbody) else: newEmptyStmt()
   )
   
