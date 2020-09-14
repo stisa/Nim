@@ -7,16 +7,17 @@
 #    distribution, for details about the copyright.
 #
 
-# This is the JavaScript code generator.
+# This is the ES6/ES2015 JavaScript code generator.
 
 discard """
-The JS code generator contains only 2 tricks:
-
-Trick 1
+Note: pointer/ptr T/var T/addr/deref
 -------
-Some locations (for example 'var int') require "fat pointers" (``etyBaseIndex``)
-which are pairs (array, index). The derefence operation is then 'array[index]'.
-Check ``mapType`` for the details.
+Pointers are emulate by using a function with a getter and setter.
+This works fine, but doesn't allow to do things like pointer arithmetic
+and sometimes requires deepcopying when dereferencing.
+Deepcopy will be implementend in 2 ways:
+  - a shallow deepcopy using ...[p.deref]
+  - a recursive deepcopy based on ...TODO:
 
 Trick 2
 -------
@@ -26,8 +27,8 @@ code like ``foo and (let bar = baz())`` cannot be translated this way. Instead
 the expressions need to be transformed into statements. ``isSimpleExpr``
 implements the required case distinction.
 
-Edit: Actually, trick 2 could be improved, since `let bar=baz(), bar` 
-is valid and does what you expect (returning bar)
+TODO: Actually, trick 2 could be improved, since `let bar=baz(), bar` 
+is valid and does what you expect (returning bar) (cf. SequenceExpr)
 """
 
 import
@@ -58,16 +59,16 @@ type
     sigConflicts: CountTable[string]
 
   ESTypeKind = enum       # necessary JS "types"
-    etyNone,                  # no type
-    etyNull,                  # null type
-    etyProc,                  # proc type
-    etyBool,                  # bool type
-    etyArray,                 # JavaScript's array
-    etyInt,                   # JavaScript's int
-    etyFloat,                 # JavaScript's float
-    etyString,                # JavaScript's raw string
-    etyObject,                # JavaScript's reference to an object
-    etyBaseIndex              # base + index needed
+    etyNone,              # no type
+    etyNull,              # null type
+    etyProc,              # proc type
+    etyBool,              # bool type
+    etyArray,             # JavaScript's array
+    etyInt,               # JavaScript's int
+    etyFloat,             # JavaScript's float
+    etyString,            # JavaScript's raw string
+    etyObject,            # JavaScript's reference to an object
+    etyPointer            # Reference emulation needed
 
 template translError(es: ESGen, n: PNode, msg:string) =
   es.config.internalError(n.info, msg & " " & $n.kind)
@@ -114,7 +115,7 @@ const nkGenSkippedKinds = { nkCommentStmt, nkEmpty,
 
 proc mapType(typ: PType): ESTypeKind =
   ## Map a nim type to js representation
-  ## ptr types => baseindex -> [val, ptr]
+  ## ptr types -> etyPointer
   ## integer, enum, char -> etyInt
   ## float -> float
   ## bool -> bool
@@ -127,7 +128,7 @@ proc mapType(typ: PType): ESTypeKind =
   
   case typ.kind
   of tyVar, tyRef, tyPtr, tyLent, tyPointer:
-    result = etyBaseIndex
+    result = etyPointer
   of tyRange, tyDistinct, tyOrdinal, tyProxy:
     result = mapType(typ[0])
   of tyInt..tyInt64, tyUInt..tyUInt64, tyEnum, tyChar: result = etyInt
@@ -231,17 +232,21 @@ proc gen(es: ESGen, n: PNode, stmntbody: var ESNode, loc: SourceLocation = nil):
 proc genDefaultLit(es: ESGen, typ: PType): ESNode
 
 proc genObjTypeInfo(es: ESGen, t: PType, stmntbody: var ESNode, loc: SourceLocation = nil) : ESNode=
+  ## Note that objects are sealed, ie you can't add or remove properties.
+  ## Values of existing properties can still be changed.
   ## type A = object
   ##   x: string
   ## becomes
   ## function A({x=""}={}){
   ##   this.x = x
+  ##   Object.seal(this);
   ## }
   # TODO: should be vv ?
   # function Car({make /*string*/, model/*string*/, year}={make:"",model:"",year:0}) {
   #     this.make = make;
   #     this.model = model;
   #     this.year = year;
+  #     Object.seal(this);
   # }
 
   #echo es.config.typeToYaml(t)
@@ -282,12 +287,12 @@ proc genDefaultLit(es: ESGen, typ: PType): ESNode =
   ## etyObject -> {}
   ## etyArray -> []
   ## etyNull, etyProc -> null
-  ## etyBaseIndex -> [null, 0]
+  ## etyPointer -> null
   if isEmptyType(typ):
     echo es.config.typeToYaml(typ)
     translError(es, "isEmptyType")
   case mapType(typ)
-  of etyNull, etyProc:
+  of etyNull, etyProc, etyPointer:
     result = newESEmitExpr("null")
   of etyBool:
     result = newESLiteral(false)
@@ -314,18 +319,13 @@ proc genDefaultLit(es: ESGen, typ: PType): ESNode =
       result = newNewExpr(newESIdent("Set"))
     else:
       translError(es, "etyObject shouldn't be " & $typ.kind)
-        
-    
-  of etyBaseIndex:
-    result = newESEmitExpr("null")
   else:
     echo es.config.typeToYaml(typ)
     translError(es, "etyNone literal" & $typ.kind)
 
 proc genSym(es: ESGen, s: PSym, wantBaseSym = false): ESNode =
   ## Generate a symbol.
-  ## If it's a type, make sure the the corresponding function `typename` exists.
-  ## If it's a var (ie a var, var T) produce sym[0] (unless asked not to with wantBaseSym)
+  ## If it's a type, make sure the the corresponding function `typ.sym` exists first.
   ## Otherwise, produce sym
   #echo es.config.symToYaml(s)
   case s.kind
@@ -339,19 +339,14 @@ proc genSym(es: ESGen, s: PSym, wantBaseSym = false): ESNode =
       result = newESIdent("", "MAYBEBUG")
   of skLabel:
     result = newESIdent(es.mangleName(s))
-  of skVar, skResult:
-    echo es.mangleName(s), " ",s.typ.kind
-    result = newESIdent(es.mangleName(s), s.typ.typeToString)    
-  of skParam:
-    result = newESIdent(es.mangleName(s), s.typ.typeToString)
   else:
-    echo "NON SPECIALIZED SYM: ", s.name.s, $s.kind
+    #echo "NON SPECIALIZED SYM: ", s.name.s, $s.kind
     result = newESIdent(es.mangleName(s), s.typ.typeToString)
 
 proc genProc(es: ESGen, prc: PSym) =
   ## Generate a js function based on the prc ast.
-  ## If there's a result, produce var result = [default(T)] 
-  ## and corresponding return result[0] (or return result if var T)
+  ## If there's a result, produce var result = defaultLit(T)
+  ## and corresponding return result
   ## The body of the proc is run through transf before generation.
   ## The complete function is added directly to the ast of the module, this places it before
   ## the first call that asked to generate it
@@ -359,8 +354,6 @@ proc genProc(es: ESGen, prc: PSym) =
   let resT = prc.getReturnType
   var bdy = newBlockStmt()
   if not res.isNil:
-    #res.sym.loc.storage = OnHeap
-  
     #echo "RT::"
     #echo es.config.typeToYaml(resT)
     bdy.add(
@@ -370,15 +363,14 @@ proc genProc(es: ESGen, prc: PSym) =
         )]
       )
     )
+  
   # handle params first so change loc is there when generating the body
   let declparams = prc.typ.n
   var params = newSeq[ESNode](declparams.len-1)
   
   for i, p in declparams:
     if i == 0: continue
-    #if p.sym.typ.mapType == etyBaseIndex:
-      #p.sym.loc.storage = OnHeap
-    if p.sym.ast.isNil:
+    if p.sym.ast.isNil: # no default value
       params[i-1] = newESIdent(mangleName(es, p.sym), p.sym.typ.typeToString)
     else:
       params[i-1] = newVarDeclarator(newESIdent(mangleName(es, p.sym), p.sym.typ.typeToString), es.gen(p.sym.ast, bdy)) #body is wrong? 
@@ -392,15 +384,10 @@ proc genProc(es: ESGen, prc: PSym) =
   )
   
   if not res.isNil:
-    if resT.kind == tyVar:
-      bdy.add(
-        newReturnStmt(es.genSym(res.sym, wantBaseSym=false))
-      )
-    else:
-      bdy.add(
-        newReturnStmt(es.genSym(res.sym))
-      )
-  
+    bdy.add(
+      newReturnStmt(es.genSym(res.sym))
+    )
+
   ESBackend(es.graph.backend).ast.add( #CHECK:ME can I use stmntbody
     newESFuncDecl(
       newESIdent(mangleName(es, prc), if res.isNil: "" else: resT.typeToString),
@@ -412,7 +399,7 @@ proc genProc(es: ESGen, prc: PSym) =
 
 proc prepareMagic(es: ESGen, name: string): ESNode =
   ## Prepare magic before using. Looks the magic name up in
-  ## the list of compilerprocs.
+  ## the list of compilerprocs, and returns the esident to use
   if name.len == 0: es.translError("empty compiler magic name")
   var s = magicsys.getCompilerProc(es.graph, name)
   if s != nil:
@@ -596,7 +583,11 @@ proc genMagic(es: ESGen, n: PNode, stmntbody: var ESNode, loc: SourceLocation = 
     #echo es.config.treeToYaml(n)
     let addrsym = es.prepareMagic("esAddr")
     var tmp : ESNode = newESIdent("tmp")
-  
+    # produces (for a ref T):
+    # let tmp = default(T)
+    # r_ = esAddr(() => {return tmp;}, (v) => {tmp = v;})
+    # This is to match what the `new` proc in system expects.
+    # for more info on addr, have a look at genAddr/genDeref
     result = newBlockStmt([
       newVarDecl(esLet,false,
         [newVarDeclarator(tmp, es.genDefaultLit(n[1].typ.skipTypes(skipPtrs)))]
@@ -615,7 +606,6 @@ proc genMagic(es: ESGen, n: PNode, stmntbody: var ESNode, loc: SourceLocation = 
     ])
   
   of mAppendStrStr: 
-    # Note: lhs is var, so we need to deref one extra time, although I thought nkHiddenDeref did this...
     #echo "APPENDSTRSTR"
     #echo es.config.treeToYaml(n[1])
     result = newAsgnExpr( "=",
@@ -683,7 +673,7 @@ proc genMagic(es: ESGen, n: PNode, stmntbody: var ESNode, loc: SourceLocation = 
     for i, el in n:
       if i == 0: continue
       result.elements[i-1] = newUnaryExpr("...", true, es.gen(n[i], stmntbody))
-  of mSetLengthStr:
+  of mSetLengthStr, mSetLengthSeq:
     result = newAsgnExpr("=",
       newMemberExpr(es.gen(n[1],stmntbody), newESIdent("length"), true),
       es.gen(n[2], stmntbody)
@@ -700,14 +690,6 @@ proc genMagic(es: ESGen, n: PNode, stmntbody: var ESNode, loc: SourceLocation = 
   of mMaxI: applyFormat("nimMax($1, $2)", "nimMax($1, $2)")
   of mEqCString: applyFormat("($1 == $2)", "($1 == $2)")
   of mEqProc: applyFormat("($1 == $2)", "($1 == $2)"
-  of mCharToStr: applyFormat("nimCharToStr($1)", "nimCharToStr($1)")
-  of mBoolToStr: applyFormat("nimBoolToStr($1)", "nimBoolToStr($1)")
-  of mIntToStr: applyFormat("cstrToNimstr(($1)+\"\")", "cstrToNimstr(($1)+\"\")")
-  of mInt64ToStr: applyFormat("cstrToNimstr(($1)+\"\")", "cstrToNimstr(($1)+\"\")")
-  of mFloatToStr:
-    useMagic(p, "nimFloatToString")
-    applyFormat "cstrToNimstr(nimFloatToString($1))"
-  of mCStrToStr: applyFormat("cstrToNimstr($1)", "cstrToNimstr($1)")
   of mStrToStr, mUnown, mIsolate: applyFormat("$1", "$1")
 ]#
     # mModI,
@@ -741,7 +723,7 @@ proc genMagic(es: ESGen, n: PNode, stmntbody: var ESNode, loc: SourceLocation = 
   #   var x, y: TCompRes
   #   gen(p, n[1], x)
   #   gen(p, n[2], y)
-  #   if mapType(n[2].typ) == etyBaseIndex:
+  #   if mapType(n[2].typ) == etyPointer:
   #     let c = "[$1, $2]" % [y.address, y.res]
   #     r.res = "$1.push($2);" % [x.rdLoc, c]
   #   elif needsNoCopy(p, n[2]):
@@ -763,7 +745,7 @@ proc genMagic(es: ESGen, n: PNode, stmntbody: var ESNode, loc: SourceLocation = 
   #   binaryExpr(p, n, r, "cmpStrings", "(cmpStrings($1, $2) < 0)")
   # of mIsNil:
   #   # we want to accept undefined, so we ==
-  #   if mapType(n[1].typ) != etyBaseIndex:
+  #   if mapType(n[1].typ) != etyPointer:
   #     unaryExpr(p, n, r, "", "($1 == null)")
   #   else:
   #     var x: TCompRes
@@ -849,23 +831,20 @@ proc genMagic(es: ESGen, n: PNode, stmntbody: var ESNode, loc: SourceLocation = 
   # of mMove:
   #   genMove(p, n, r)
   else:
-    # try to generate the proc
-    # if not es.graph.backend.ESBackend.generatedProcs.containsOrIncl(n[0].sym.id):
-    #   es.genProc(n[0].sym)
-    # result = genCall(es, n, stmntbody)
     translError(es, n):
       "genMagic: " & $op
 
 proc genAsgn(es: ESGen, lhs, rhs: PNode, stmntbody: var ESNode, loc: SourceLocation = nil): ESNode =
   ## Assignment. For vars, this is probably more complex than simply
-  ## a = b due to the need to handle var T parameters
+  ## a = b due to the need to handle var T parameters and derefs., we propably
+  ## need to generate deepcopies somewhere.
   echo "GENASGN"
   #echo es.config.treeToYaml(lhs)
   #echo es.config.treeToYaml(rhs)
   result = newExpressionStmt(
     newAsgnExpr("=", es.gen(lhs, stmntbody), es.gen(rhs, stmntbody))
   )
-
+# TODO: wrong for exception, missing generator function call
 proc genObjConstrCall(es: ESGen, n: PNode, stmntbody: var ESNode, loc: SourceLocation = nil) : ESNode=
   ## An object constructor.
   ## Generates something like
@@ -873,9 +852,9 @@ proc genObjConstrCall(es: ESGen, n: PNode, stmntbody: var ESNode, loc: SourceLoc
   if n.typ.isNil: es.translError(n, "Empty type for nkobjconstr")
 
   #echo es.config.treeToYaml(n)
-  if n[0].kind != nkSym:
-    #echo "GOBJC", n.typ.typeToString
-    #echo es.config.treeToYaml(n)
+  if n[0].kind != nkSym: # ie a nkPar, eg (ref ValueError)(msg: "wrong value")
+    echo "GOBJC", n.typ.typeToString
+    echo es.config.treeToYaml(n)
     var props = newSeq[ESNode]()
     for i,p in n:
       if i == 0: continue
@@ -891,6 +870,7 @@ proc genObjConstrCall(es: ESGen, n: PNode, stmntbody: var ESNode, loc: SourceLoc
       # arg is exprcolonexpr, don't care about name tho
       if i == 0: continue
       args.add(newProperty(es.gen(arg[0],stmntbody), es.gen(arg[1],stmntbody)))
+    
     result = newNewExpr(
       newESIdent(es.mangleName(n[0].sym)), [newObjectExpr(args)]
     )
@@ -1033,9 +1013,9 @@ proc genCallOrMagic(es: ESGen, n: PNode, stmntbody: var ESNode, loc: SourceLocat
 proc genVar(es: ESGen, n: PNode, stmntbody: var ESNode, loc: SourceLocation = nil): ESNode =
   ## var x = 0
   ## becomes
-  ## let x = [0]
+  ## let x = 0
   ## while var x: int
-  ## becomes let x = [0] (ie defaultLit(T))
+  ## becomes let x = 0 (ie let x = defaultLit(T))
   result = newBlockStmt()
   #echo es.config.treeToYaml(n)
   for v in n.sons:
@@ -1069,11 +1049,11 @@ proc genLet(es: ESGen, n: PNode, stmntbody: var ESNode, loc: SourceLocation = ni
     )
 
 proc genStmtListExpr(es: ESGen, n: PNode, stmntbody: var ESNode, loc: SourceLocation = nil): ESNode =
-  #TODO: use https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Operators/Comma_Operator
   for i, son in n.sons:
     if i == n.sons.len-1:
       result = es.gen(son,stmntbody)
-    stmntbody.add(es.gen(son,stmntbody))
+    else:
+      stmntbody.add(es.gen(son,stmntbody))
 
 proc genStmtList(es: ESGen, n: PNode, stmntbody: var ESNode, loc: SourceLocation = nil): ESNode =  
   ## Generate each stmt and add it to the block.
@@ -1146,6 +1126,14 @@ proc genBlockStmt(es: ESGen, n: PNode, stmntbody: var ESNode, loc: SourceLocatio
     es.gen(n[1], stmntbody)
   )
 
+proc genBlockExpr(es: ESGen, n: PNode, stmntbody: var ESNode, loc: SourceLocation = nil): ESNode =
+  # skip name for block stmt, FIXME:
+  for i, son in n[1]:
+    if i == n.sons.len-1:
+      result = es.gen(son,stmntbody)
+    else:
+      stmntbody.add(es.gen(son,stmntbody))
+
 proc genConst(es: ESGen, n: PNode, stmntbody: var ESNode, loc: SourceLocation = nil): ESNode =
   ## Nim consts are compiletime, and they're mostly not present in the end code
   ## unless the const it is all of the below:
@@ -1174,19 +1162,13 @@ proc genDotExpr(es: ESGen, n: PNode, stmntbody: var ESNode, loc: SourceLocation 
 proc genAddr(es: ESGen, n: PNode, stmntbody: var ESNode, loc: SourceLocation = nil): ESNode =
   ## Addressing only works for `var`s, specifically it can be either
   ## a nim `var` or a param passed by `var T`
-  ## `var` are translated to an 1-elem array [val]
-  ## and the addr operation produces [ [val], index ]
-  ## where index is the index or fieldname to use when dereferencin
-  ## var x = 0 -> let x = [0]
-  ## let z = addr x -> const z = [x, 0]
-  ## var y = [1,2,3] -> let x = [new Int32Array[1,2,3]]
-  ## let w = addr y[1] -> const w = [y[0], 1]
-  ## var a = SomeObj(x: [1,2,3]) -> let a = [new SomeObj([1,2,3])]
-  ## let b = addr a.x[1] -> const w = [a[0].x, 1]
-  ## var a = SomeObj(x: [1,2,3]) -> let a = [new SomeObj([1,2,3])]
-  ## let b = addr a.x -> const w = [a[0], "x"]
-  ## 
-  ## CHECK: is hiddenAddr only for var T? I hope so.
+  ## and the addr operation produces a call to the function esAddr from jssys:
+  ## var p = addr x
+  ## produces
+  ## function esAddr(d,a){
+  ##   return { get deref() { return `d`(); }, set deref(v) { `a`(v); } };
+  ## }
+  ## let p = esAddr(() => { return `x`; }, (v) => { `x` = v; });
   
   let addrsym = es.prepareMagic("esAddr")
   var val : ESNode
@@ -1207,51 +1189,45 @@ proc genAddr(es: ESGen, n: PNode, stmntbody: var ESNode, loc: SourceLocation = n
     render(val) & 
     "; }, (v) => { " &
     render(val) & " = v; })")
-  #if n.kind == nkHiddenAddr: 
-  #  # Since this is expected to produce a tyVar, we need to add an extra
-  #  # set of []
-  #  result = newArrayExpr([result])
+
   
 proc genDeref(es: ESGen, n: PNode, stmntbody: var ESNode, loc: SourceLocation = nil): ESNode =
-  ## Dereference a nim ptr to a js value
-  ## This does gen(sym)[symbase[1]]
-  ## var x = 0 -> let x = [0]
-  ## let z = addr x -> const z = [x, 0]
-  ## echo z[] -> console.log(z[0][z[1]])
-  ## var y = [1,2,3] -> let x = [new Int32Array[1,2,3]]
-  ## let w = addr y[1] -> const w = [y[0], 1]
-  ## echo w[] -> console.log(w[0][w[1]]) // w[0][1]
-  ## var a = SomeObj(x: [1,2,3]) -> let a = [new SomeObj([1,2,3])]
-  ## let b = addr a.x[1] -> const w = [a[0].x, 1]
-  ## echo b[] -> console.log(b[0][b[1]) // b[0][1]
-  ## var a = SomeObj(x: [1,2,3]) -> let a = [new SomeObj([1,2,3])]
-  ## let b = addr a.x -> const w = [a[0], "x"]
-  ## echo b[] -> console.log(b[0][b[1]]) // b[0]["x"]
-  ##   
-  ## var x = 0 -> let x = [0]
-  ## var z = addr x -> let z = [[x, 0]] # [[[0], 0]] , z[0] -> [[0],0], z[0][1] -> 0
-  ## echo z[] -> console.log(z[0][z[0][1]])
-  ## var y = [1,2,3] -> let x = [new Int32Array[1,2,3]]
-  ## vart w = addr y[2] -> let w = [[y[0], 2]] # [[ [1,2,3], 2]],
-  ## echo w[] -> console.log(w[0][0][w[0][1]]) // w[0][0][2] 
-  ## var a = SomeObj(x: [1,2,3]) -> let a = [new SomeObj([1,2,3])]
-  ## var b = addr a.x[1] -> let b = [[a[0].x, 1]]
-  ## echo b[] -> console.log(b[0][0][b[0][1]) // b[0][0][1]
-  ## var aa = SomeObj(x: [1,2,3]) -> let aa = [new SomeObj([1,2,3])]
-  ## var bb = addr aa.x -> let bb = [[aa[0], "x"]]
-  ## echo bb[] -> console.log(bb[0][0][bb[0][1]]) // bb[0][0]["x"]
-  ## var a3 = SomeObj(x: [(1,2),(3,4)]) -> let a3 = [new SomeObj({x:[{1,2},{3,4}])]
-  ## var b3 = addr a3.x[1][0] -> let b3 = [[a3[0].x[1], 0]]
-  ## echo b3[] -> console.log(b3[0][0][b3[0][1]]) // b3[0][0][0]
+  ## Dereference a nim ptr to a js value by accessing the deref property
+  ## of a pointer generated by addr (or by constructing a ptr/ref)
   let ident = es.gen(n[0], stmntbody)
-  echo "DEREFIDENT:", n[0].kind
-  if n[0].kind == nkSym: echo n[0].sym.name.s
-  echo render(ident)
+  #echo "DEREFIDENT:", n[0].kind
+  #if n[0].kind == nkSym: echo n[0].sym.name.s
+  #echo render(ident)
   result = newMemberExpr(
     ident, newESIdent("deref"), true
   )
-  echo "DEREF:"
-  echo render(result)
+  #echo "DEREF:"
+  #echo render(result)
+
+
+proc genIfExpr(es: ESGen, n: PNode, stmntbody: var ESNode, loc: SourceLocation = nil): ESNode =
+  ## Start from an empty js stmt
+  ## Gen the last branch into result
+  ## Gen ^2 branch, use last iteration as the else branch (if then else result)
+  ## Recursively build the tree: if ^n then ^n else if ^n-1 then ^n-1 else ... if ^2 then ^2 else ^1
+
+  #echo es.config.treeToYaml(n)
+  #echo renderTree(n)
+  result = newEmptyStmt()
+  for bidx in countdown(n.len-1,0):
+    #echo "ifExprloop"
+    #echo es.config.treeToYaml(n[bidx])
+    #result1 = gen else1
+    #result2 = gen if1 else result1
+    #result3 = gen if2 else result2
+    if n[bidx].kind == nkElseExpr:
+      result = es.gen(n[bidx][0], stmntbody)
+    else: #nkElif
+      result = newCondExpr(
+        es.gen(n[bidx][0], stmntbody), # cond 
+        es.gen(n[bidx][1], stmntbody), # then
+        result                         # else
+      )
 
 proc genIfStmt(es: ESGen, n: PNode, stmntbody: var ESNode, loc: SourceLocation = nil): ESNode =
   ## Start from an empty js stmt
@@ -1321,6 +1297,92 @@ proc genRaise(es: ESGen, n: PNode, stmntbody: var ESNode, loc: SourceLocation = 
   #echo es.config.typeToYaml(n[0].typ.skipTypes(skipPtrs))
   result = newCallExpr(id, [es.gen(n[0],stmntbody), newESLiteral(n[0].typ.skipTypes(skipPtrs).sym.name.s)])
 
+proc genFinally(es: ESGen, n: PNode, stmntbody: var ESNode, loc: SourceLocation = nil): ESNode =
+  result = es.gen(n[0], stmntbody)
+
+proc genExceptBranch(es: ESGen, n: PNode, stmntbody: var ESNode, loc: SourceLocation = nil): ESNode =
+  if n[0].kind == nkType:
+    if n[1].kind == nkStmtListExpr:
+      # search for the symbol to use for the exception
+      let exsym = es.genSym(n[1][0][0][0].sym)
+      var exbody = newBlockStmt()
+      for i,son in n[1]:
+        if i == 0: continue
+        exbody.add(
+          es.gen(son, stmntbody)
+        )
+      result = newCatchClause(
+        exsym,
+        exbody
+      )
+    else:
+      result = newCatchClause(
+        es.genSym(n[0].typ.sym),
+        es.gen(n[1], stmntbody)
+      )
+  #elif n[0].kind == 
+  else:
+    result = newCatchClause(
+      newESIdent("_"),
+      es.gen(n[0], stmntbody)
+    )
+  
+
+proc genTryStmt(es: ESGen, n: PNode, stmntbody: var ESNode, loc: SourceLocation = nil): ESNode =
+  ## Maps nim try stmt to js try catch
+  ## try branch -> try
+  ## except -> catch
+  ## finally -> finally
+  ## see https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Statements/try...catch 
+  ## at "Conditional Catch Blocks"
+  ## the js exception is called "lastJSError" and it gets assigned to the name
+  ## nim expects (ie `e` in `except ValueError as e`) through `getCurrentException`
+  #echo "TRYSTMT"
+  #echo es.config.treeToYaml(n)
+  var catches = newSeq[ESNode]()
+  
+  var ifcl : ESNode = newEmptyStmt()
+
+  for i in countdown(n.len-1,0):
+    let son = n[i]
+    if son.kind == nkExceptBranch: 
+      if son[0].kind == nkType:
+        if son[1].kind == nkStmtListExpr:
+          # search for the symbol to use for the exception
+          #let exsym = es.genSym(son[1][0][0][0].sym)
+          #echo es.config.treeToYaml(son)
+          ifcl = newIfStmt(
+            newBinaryExpr("instanceof",
+              newESIdent("lastJSError"),
+              es.genSym(son[0].typ.sym)
+            ),
+            #exbody sa
+            newBlockStmt([
+              es.gen(son[1][0], stmntbody),
+              es.gen(son[1][1], stmntbody)
+            ]),
+            ifcl
+          )
+        else:
+          ifcl = newIfStmt(
+            newLogicalExpr("==",
+              newESIdent("lastJSError"),
+              es.genSym(son[0].typ.sym)
+            ),            
+            es.gen(son[1], stmntbody),
+            ifcl
+          )
+      else:
+        # begin here
+        ifcl = es.gen(son[0], stmntbody)
+
+  result = newTryStmt(
+    es.gen(n[0], stmntbody),
+    newCatchClause(newESIdent("lastJSError"), ifcl),
+    if n[^1].kind == nkFinally: es.genFinally(n[^1], stmntbody) else: newEmptyStmt()
+  )
+  
+
 proc genStringToCString(es: ESGen, n: PNode, stmntbody: var ESNode, loc: SourceLocation = nil): ESNode =
   ## A conv from nim string to cstring
   ## TODO: introduce a third type to represent raw js strings, and make cstring a Uint8Array.
@@ -1328,6 +1390,11 @@ proc genStringToCString(es: ESGen, n: PNode, stmntbody: var ESNode, loc: SourceL
   ## raw js string are immutable
   let id = es.prepareMagic("esNimStrToJsStr")
   result = newCallExpr(id, es.gen(n[0],stmntbody))
+
+proc genCStringToString(es: ESGen, n: PNode, stmntbody: var ESNode, loc: SourceLocation = nil): ESNode =
+  let id = es.prepareMagic("esNimStrLit")
+  result = newCallExpr(id, es.gen(n[0],stmntbody))
+
 
 proc genRangeCheck(es: ESGen, n: PNode, stmntbody: var ESNode, loc: SourceLocation = nil): ESNode =
   ## Check the number is in the specified range. See jssys chckRange
@@ -1366,9 +1433,9 @@ proc genBreakStmt(es: ESGen, n: PNode, stmntbody: var ESNode, loc: SourceLocatio
 
 proc genConv(es: ESGen, n: PNode, stmntbody: var ESNode, loc: SourceLocation = nil): ESNode =
   ## Convert between types. Largely unneeded in js, but should probably at least handle
-  ## objects with a js type, typedarrays that need casting between types, and strings.
-  echo "CONV"
-  echo es.config.treeToYaml(n)
+  ## objects with a js type, typedarrays that need casting between types, and strings/chars.
+  #echo "CONV to ", $n[0].typ.kind
+  #echo es.config.treeToYaml(n)
   if n[0].kind == nkSym:
     let t = n[0].sym.typ.kind
     case t:
@@ -1428,6 +1495,8 @@ proc gen(es: ESGen, n: PNode, stmntbody: var ESNode, loc: SourceLocation = nil):
     result = es.genAddr(n, stmntbody)
   of nkIfStmt:
     result = es.genIfStmt(n, stmntbody)
+  of nkIfExpr:
+    result = es.genIfExpr(n, stmntbody)
   of nkDerefExpr, nkHiddenDeref:
     result = es.genDeref(n, stmntbody)
   of nkDotExpr:
@@ -1444,10 +1513,12 @@ proc gen(es: ESGen, n: PNode, stmntbody: var ESNode, loc: SourceLocation = nil):
     result = es.genAsm(n, stmntbody)
   of nkRaiseStmt:
     result = es.genRaise(n, stmntbody)
-  of nkConv, nkHiddenStdConv:
+  of nkConv, nkHiddenStdConv, nkHiddenSubConv:
     result = es.genConv(n, stmntbody)
   of nkStringToCString:
     result = es.genStringToCString(n, stmntbody)
+  of nkCStringToString:
+    result = es.genCStringToString(n, stmntbody)
   of nkReturnStmt:
     result = es.genReturnStmt(n, stmntbody)
   of nkDiscardStmt:
@@ -1458,6 +1529,12 @@ proc gen(es: ESGen, n: PNode, stmntbody: var ESNode, loc: SourceLocation = nil):
     result = es.genRangeCheck(n, stmntbody)
   of nkBreakStmt:
     result = es.genBreakStmt(n, stmntbody)
+  of nkTryStmt, nkHiddenTryStmt:
+    result = es.genTryStmt(n, stmntbody)
+  of nkCast:
+    #echo "CAST"
+    #echo es.config.treeToYaml(n)
+    result = es.gen(n[1], stmntbody)
   else: 
     echo es.config.treeToYaml(n)
     translError(es, n, "gen: unknown node kind")
@@ -1467,18 +1544,13 @@ proc gen(es: ESGen, n: PNode, stmntbody: var ESNode, loc: SourceLocation = nil):
   #[
   of nkClosure:
   of nkPar:
-  of nkHiddenStdConv, nkHiddenSubConv, nkConv:
   of nkCheckedFieldExpr:
   of nkObjDownConv:
   of nkObjUpConv:
   of nkCast:
- 
-  of nkCStringToString:
-  of nkEmpty:
   of nkLambdaKinds
   of nkType:
   of nkBlockExpr:
-  of nkIfExpr:
   of nkTryStmt, nkHiddenTryStmt:
   ]#
 

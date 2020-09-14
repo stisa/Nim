@@ -45,8 +45,8 @@ proc newUpdateExpr*(op:string, prefix:bool,arg:ESNode,loc:SourceLocation=nil):ES
 
 proc newBinaryExpr*(op:string, left,right:ESNode,loc:SourceLocation=nil):ESNode =
   assert op.isBinaryOp, op
-  assert left.isExpression
-  assert right.isExpression
+  assert left.isExpression, $left.typ
+  assert right.isExpression, $right.typ
 
   result = newESNode(ekBinaryExpression,loc)
   result.boperator = op
@@ -100,8 +100,8 @@ proc newCondExpr*(cond,then,other:ESNode, loc:SourceLocation=nil):ESNode =
 
   result = newESNode(ekConditionalExpression,loc)
   result.test = cond
-  result.calternate = then
-  result.cconsequent = other
+  result.calternate = other
+  result.cconsequent = then
 
 proc newCallExpr*(callee:ESNode, args:varargs[ESNode],loc:SourceLocation=nil):ESNode =
   assert callee.isExpression, $callee.typ

@@ -1940,7 +1940,6 @@ when defined(js) and not defined(es):
   proc add*(x: var cstring, y: cstring) {.magic: "AppendStrStr".}
 elif defined es:
   proc add*(x: var string, y: cstring) =
-    
     let initialLen = x.len
     x.setLen(x.len+y.len)
     var i = 0

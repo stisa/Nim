@@ -171,7 +171,7 @@ proc renderTryStmt(t:ESNode, indlvl=0):string =
     add result, "finally {\n$1\n}" % [render(t.tfinalizer)]
 
 proc renderCatchClause(c:ESNode, indlvl=0):string =
-  result = "catch ($1) {$2}" % [render(c.cparam), render(c.body)]
+  result = "catch ($1) {\n$2\n}" % [render(c.cparam), render(c.body)]
 
 proc renderWhileStmt(w:ESNode, indlvl=0):string =
   result = "while ($1) {\n$2\n}" % [render(w.test), render(w.body).indent(indlvl+2)]

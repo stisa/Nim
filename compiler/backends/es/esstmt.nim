@@ -90,9 +90,9 @@ proc newThrowStmt*(arg:ESNode,loc:SourceLocation=nil):ESNode =
   result.argument = arg
 
 proc newTryStmt*(blc,handler,finalizer:ESNode,loc:SourceLocation=nil):ESNode =
-  assert blc.typ == ekBlockStatement
-  assert handler.typ == ekCatchClause
-  assert finalizer.typ == ekBlockStatement
+  assert blc.isStatement, $blc.typ
+  assert handler.typ == ekCatchClause, $handler.typ
+  assert finalizer.isStatement, $finalizer.typ
 
   result = newESNode(ekTryStatement,loc)
   result.tblck = blc
@@ -100,8 +100,8 @@ proc newTryStmt*(blc,handler,finalizer:ESNode,loc:SourceLocation=nil):ESNode =
   result.tfinalizer = finalizer
 
 proc newCatchClause*(par,bod:ESNode,loc:SourceLocation=nil):ESNode =
-  assert par.isPattern
-  assert bod.typ == ekBlockStatement
+  assert par.isPattern, $par.typ
+  assert bod.isStatement, $bod.typ
   
   result = newESNode(ekCatchClause,loc)
   result.cparam = par
@@ -175,6 +175,7 @@ proc newObjTypeDecl*(name: ESNode, exp:bool, fields: varargs[ESNode]): ESNode =
   #     this.make = make;
   #     this.model = model;
   #     this.year = year;
+  #     Object.seal(this);
   # }
 
   #TODO: what about reccase obj
@@ -186,7 +187,9 @@ proc newObjTypeDecl*(name: ESNode, exp:bool, fields: varargs[ESNode]): ESNode =
     bdy.add(
       newAsgnExpr("=", newMemberExpr(newThisExpr(), field.key, computed=true), field.key)
     )
-
+  bdy.add(
+    newMemberCallExpr(newESIdent("Object"), newESIdent("seal"), newESIdent("this"))
+  )
   result = newESFuncDecl(
     id=name,
     body=bdy,
