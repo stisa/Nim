@@ -192,7 +192,7 @@ else:
 when true:
   proc raiseException(e: ref Exception, ename: cstring) {.
       compilerproc, asmNoStackFrame.} =
-    if not ename.isNil:
+    if not ename.isNil and e.name.isNil:
       e.name = ename
     if excHandler == 0:
       unhandledException(e)
