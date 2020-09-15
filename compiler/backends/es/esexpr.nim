@@ -36,7 +36,7 @@ proc newUnaryExpr*(op:string, prefix:bool,arg:ESNode,loc:SourceLocation=nil):ESN
 
 proc newUpdateExpr*(op:string, prefix:bool,arg:ESNode,loc:SourceLocation=nil):ESNode =
   assert op.isUpdateOp, op
-  assert arg.isExpression
+  assert arg.isExpression, $arg.typ
 
   result = newESNode(ekUpdateExpression,loc)
   result.uoperator = op

@@ -69,10 +69,8 @@ when defined es:
     #asm "`result` = `x` == null; //TODO: this needs help by deref" #"""
   proc nimExcToJsErr(e: Exception): PJSError {.compilerproc.} =
     asm """
-    let jse = new Error()
-    jse.message = esNimStrToJsStr(`e`.msg)
-    jse.name = `e`.name
-    return jse
+    `result` = `e`
+    `result`.message = esNimStrToJsStr(`e`.message)
     """
 
 proc nimBoolToStr(x: bool): string {.compilerproc.} =
@@ -160,20 +158,13 @@ when defined es:
     add(buf, "\n")
     when NimStackTrace:
       add(buf, rawWriteStackTrace())
-    #let cbuf = cstring(buf)
     framePtr = nil
-    e.msg = buf 
+    e.msg = buf
+    let jse = nimExcToJsErr(e[])
     {.emit: """
-    throw `e`
+    throw `jse`
     """.}
-    # {.emit: """
-    # if (typeof(Error) !== "undefined") {
-    #   throw new Error(`cbuf`);
-    # }
-    # else {
-    #   throw `cbuf`;
-    # }
-    # """.}
+    
 else:
   proc unhandledException(e: ref Exception) {.
       compilerproc, asmNoStackFrame.} =
@@ -201,13 +192,13 @@ else:
 when true:
   proc raiseException(e: ref Exception, ename: cstring) {.
       compilerproc, asmNoStackFrame.} =
-    e.name = ename
+    if not ename.isNil:
+      e.name = ename
     if excHandler == 0:
       unhandledException(e)
     when NimStackTrace:
       e.trace = rawWriteStackTrace()
-    let jse = nimExcToJsErr(e[])
-    asm "throw `jse`;"
+    asm "throw `e`;"
 
   proc reraiseException() {.compilerproc, asmNoStackFrame.} =
     if lastJSError == nil:
