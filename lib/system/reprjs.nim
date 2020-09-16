@@ -20,15 +20,24 @@ proc reprPointer(p: pointer): string {.compilerproc.} =
 proc reprBool(x: bool): string {.compilerRtl.} =
   if x: result = "true"
   else: result = "false"
-
-proc reprEnum(e: int, typ: PNimType): string {.compilerRtl.} =
-  var tmp: bool
-  let item = typ.node.sons[e]
-  {.emit: "`tmp` = `item` !== undefined".}
-  if tmp:
-    result = makeNimstrLit(item.name)
-  else:
-    result = $e & " (invalid data!)"
+when defined es:
+  proc reprEnum(e: int, typ: PNimType): string {.compilerRtl.} =
+    var tmp: bool
+    let item = typ.node.sons[e]
+    {.emit: "`tmp` = `item` !== undefined".}
+    if tmp:
+      result = makeNimstrLit(item.name)
+    else:
+      result = $e & " (invalid data!)"
+else:
+  proc reprEnum(e: int, typ: PNimType): string {.compilerRtl.} =
+    var tmp: bool
+    let item = typ.node.sons[e]
+    {.emit: "`tmp` = `item` !== undefined".}
+    if tmp:
+      result = makeNimstrLit(item.name)
+    else:
+      result = $e & " (invalid data!)"
 
 proc reprChar(x: char): string {.compilerRtl.} =
   result = "\'"

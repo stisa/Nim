@@ -5,7 +5,7 @@ import strformat
 proc render*(en:ESNode, indlvl:int=0 ):string
 
 proc renderSourceLoc*(sl:SourceLocation):string = 
-  "\n// source:" & sl.source & " line: " & $sl.starts.line & ", col: " & $sl.starts.col & "\n"
+  "\n/* source:" & sl.source & " line: " & $sl.starts.line & ", col: " & $sl.starts.col & "*/\n"
 
 proc renderIdent*(sl:ESNode, indlvl=0):string =
   assert sl.typ == ekIdentifier, $sl.typ
@@ -70,8 +70,7 @@ proc renderParam(p: ESNode, indlvl=0): string =
       add result, renderParamProperty(prop)
       if i != p.properties.len-1:
         add result, ", "
-      else:
-        add result, "}={}" #FIXME: move ={} to the ast?
+    add result, "}={}" #FIXME: move ={} to the ast?
   else:
     assert(p.isPattern, $p.typ)
 
@@ -90,8 +89,7 @@ proc renderBlockStmt(b:ESNode, indlvl=0):string =
   result = ""
   for i, s in b.bbody:
     if i == 0: discard
-    else:
-      add result, "\n"
+    else: add result, "\n"
     add result, render(s) #& ";" 
   result = result.indent(indlvl)
 
@@ -197,6 +195,7 @@ proc renderVarDecl(v:ESNode, indlvl=0):string =
   result = if v.vexp: "export " else: "" 
   result &= render(v.vkind) & " "
   for i,vd in v.vdeclarations:
+    if vd.typ == ekEmptyStatement: continue 
     add result, render(vd)
     if i != v.vdeclarations.len-1:
       add result,", "
@@ -291,8 +290,10 @@ proc render*(en:ESNode, indlvl=0):string =
       return fmt"/*An ESNode is nil*/"
     else:
       {.warning: "An ESNode is nil".}
-  result = ""
-  # TODO:  add result, renderSourceLoc(en.loc)
+  result = "" #& $en.typ
+  # TODO:  
+  if not (en.loc.isNil) and en.isStatement:
+    add result, renderSourceLoc(en.loc)
   case en.typ:
   of ekIdentifier: add result, renderIdent(en, indlvl)
   of ekStrLit, ekBoolLit, ekNullLit, ekIntLit,

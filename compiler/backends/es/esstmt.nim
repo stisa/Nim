@@ -170,31 +170,4 @@ proc newVarDeclarator*(id, init:ESNode, loc:SourceLocation=nil):ESNode =
   else:
     result.vinit = newESLiteral()
 
-proc newObjTypeDecl*(name: ESNode, exp:bool, fields: varargs[ESNode]): ESNode =
-  # function Car({make, model, year}={make:"Unknwown",model:"Unknown",year:-1}) {
-  #     this.make = make;
-  #     this.model = model;
-  #     this.year = year;
-  #     Object.seal(this);
-  # }
-
-  #TODO: what about reccase obj
-  
-  #TODO: assert isproperty...
-
-  var bdy = newBlockStmt()
-  for field in fields:
-    bdy.add(
-      newAsgnExpr("=", newMemberExpr(newThisExpr(), field.key, computed=true), field.key)
-    )
-  bdy.add(
-    newMemberCallExpr(newESIdent("Object"), newESIdent("seal"), newESIdent("this"))
-  )
-  result = newESFuncDecl(
-    id=name,
-    body=bdy,
-    [newObjectExpr(fields)],
-    exp
-  )
-
 

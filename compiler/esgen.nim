@@ -107,6 +107,13 @@ proc updateLoc(s: PSym, loc: int, kind: TLocKind, skind: TStorageLoc) =
   #s.loc.pos = loc
   s.loc.r = loc.rope # for debug purposes
 
+proc infoToSL(es: ESGen, info: TLineInfo): SourceLocation =
+  newSourceLoc(
+    es.config.toFilename(info.fileIndex),
+    (toLinenumber(info), toColumn(info)),
+    (toLinenumber(info), toColumn(info))
+  )
+
 proc exportOrUsed(s: PSym): bool =
   ( s.flags.contains(sfExported) and 
     s.skipGenericOwner.flags.contains(sfMainModule)
@@ -238,7 +245,7 @@ proc escapeJSString(s: string): string =
     else: result.add(c)
   #result.add("\"")
 
-proc makeJSString(s: string, escapeNonAscii = true): string =
+proc makeJSString(s: string, escapeNonAscii = false): string =
   if escapeNonAscii:
     result = strutils.escape(s)
   else:
@@ -247,179 +254,6 @@ proc makeJSString(s: string, escapeNonAscii = true): string =
 proc gen(es: ESGen, n: PNode, stmntbody: var ESNode, loc: SourceLocation = nil): ESNode
 proc genDefaultLit(es: ESGen, typ: PType): ESNode
 
-
-proc newExcTypeDecl*(name: ESNode, exp:bool, fields: varargs[ESNode]): ESNode =
-    # function ValueError_1214642({parent = null, name = "", msg = [], trace = [], up = null}={}) {
-    #   let e = new Error()
-    #   e.parent = parent
-    #   e.name = name
-    #   e.message = msg # should convert to cstring?
-    #   e.trace = trace
-    #   e.up = up
-    #   return e
-    # }
-
-  var bdy = newBlockStmt()
-  bdy.add(
-    newVarDecl(
-      esLet, false, [newVarDeclarator(
-        newESIdent("err"),
-        newNewExpr(newESIdent("Error"))
-      )]
-    )
-  )
-  for field in fields:
-    if field.key.typ == ekIdentifier and field.key.name == "name":
-      bdy.add(
-        newAsgnExpr("=", newMemberExpr(newESIdent("err"), field.key, computed=true), newESLiteral(name.name))
-      )
-    else:
-      bdy.add(
-        newAsgnExpr("=", newMemberExpr(newESIdent("err"), field.key, computed=true), field.key)
-      )
-  bdy.add(newReturnStmt(newESIdent("err")))
-  result = newESFuncDecl(
-    id=name,
-    body=bdy,
-    [newObjectExpr(fields)],
-    exp
-  )
-
-proc genExcObjFunction(es: ESGen, t: PType, stmntbody: var ESNode, loc: SourceLocation = nil)=
-
-    var tt = t
-    assert t.isException, $t.kind
-    assert(tt != nil)
-
-    tt = tt.skipTypes(abstractInst)
-    while tt.kind == tyObject:
-      if tt.sym != nil and tt.sym.magic == mException: break
-      if tt[0] == nil: break
-      tt = skipTypes(tt[0], abstractPtrs)
-    if tt.isNil: translError(es, "genExcObj" & $t.kind)
-    
-    var fields : seq[ESNode] = @[]
-    for i, reclst in tt.n:
-      #dbg "RECLIST", $reclst.typ
-      #dbg es.config.treeToYaml(reclst)
-      fields.add(
-        newProperty(es.gen(reclst, stmntbody), es.genDefaultLit(reclst.typ))
-      )
-    
-    es.graph.backend.ESBackend.ast.add newExcTypeDecl(
-      newESIdent(t.sym.name.s), false#[t.sym.exportOrUsed]#, fields
-    )
-
-proc genObjTypeInfo(es: ESGen, t: PType, stmntbody: var ESNode, loc: SourceLocation = nil) : ESNode=
-  ## Note that objects are sealed, ie you can't add or remove properties.
-  ## Values of existing properties can still be changed.
-  ## type A = object
-  ##   x: string
-  ## becomes
-  ## function A({x=""}={}){
-  ##   this.x = x
-  ##   Object.seal(this);
-  ## }
-  # TODO: should be vv ?
-  # function Car({make /*string*/, model/*string*/, year}={make:"",model:"",year:0}) {
-  #     this.make = make;
-  #     this.model = model;
-  #     this.year = year;
-  #     Object.seal(this);
-  # }
-
-  #dbg es.config.typeToYaml(t)
-  # This piece deals with getting the object type of exceptions
-  var tt = t
-  if tt.isException:
-    assert(tt != nil)
-
-    tt = tt.skipTypes(abstractInst)
-    while tt.kind == tyObject:
-      if tt.sym != nil and tt.sym.magic == mException: break
-      if tt[0] == nil: break
-      tt = skipTypes(tt[0], abstractPtrs)
-  if tt.isNil: translError(es, "genObjtype" & $t.kind)
-  # fin exception
-  
-  var fields : seq[ESNode] = @[]
-  for i, reclst in tt.n:
-    #dbg "RECLIST", $reclst.typ
-    #dbg es.config.treeToYaml(reclst)
-    fields.add(
-      newProperty(es.gen(reclst, stmntbody), es.genDefaultLit(reclst.typ))
-    )
-  
-  result = newObjTypeDecl(
-    newESIdent(es.mangleName(t.sym)), false#[t.sym.exportOrUsed]#, fields
-  )
-
-proc genDefaultLit(es: ESGen, typ: PType): ESNode =
-  ## Generate a literal with default value for when we do things like
-  ## var x : int
-  ## Specifically:
-  ## etyInt -> 0
-  ## etyFloat -> 0.0
-  ## etyBool -> false
-  ## etyString -> ""
-  ## etyObject -> {}
-  ## etyArray -> []
-  ## etyNull, etyProc -> null
-  ## etyPointer -> null
-  if isEmptyType(typ):
-    dbg es.config.typeToYaml(typ)
-    translError(es, "isEmptyType")
-  case mapType(typ)
-  of etyNull, etyProc, etyPointer:
-    result = newESEmitExpr("null")
-  of etyBool:
-    result = newESLiteral(false)
-  of etyArray:
-    result = newArrayExpr()
-  of etyInt:
-    result = newESLiteral(0)
-  of etyFloat:
-    result = newESLiteral(0.0)
-  of etyString:
-    result = newESLiteral("")
-  of etyObject:
-    case typ.kind
-    of tyTuple:
-      result = newObjectExpr()
-    of tyObject:
-      let b = es.graph.backend.ESBackend
-      if not b.generatedTypeInfos.containsOrIncl(typ.sym.id):
-        b.ast.add(
-          es.genObjTypeInfo(typ, b.ast) # TODO:just don't return the function? or return just the ident?
-        )
-      result = newNewExpr(newESIdent(es.mangleName(typ.sym)))
-    of tySet:
-      result = newNewExpr(newESIdent("Set"))
-    else:
-      translError(es, "etyObject shouldn't be " & $typ.kind & ", " & typ.typeToString)
-  else:
-    dbg es.config.typeToYaml(typ)
-    translError(es, "etyNone literal" & $typ.kind)
-
-proc genSym(es: ESGen, s: PSym, wantBaseSym = false): ESNode =
-  ## Generate a symbol.
-  ## If it's a type, make sure the the corresponding function `typ.sym` exists first.
-  ## Otherwise, produce sym
-  #dbg es.config.symToYaml(s)
-  case s.kind
-  of skType:
-    #dbg "SYMTYP"
-    if s.typ.mapType == etyObject:
-      if not es.graph.backend.ESBackend.generatedTypeInfos.containsOrIncl(s.id):
-          es.graph.backend.ESBackend.ast.add(es.genObjTypeInfo(s.typ, es.graph.backend.ESBackend.ast))
-      result = newESIdent(es.mangleName(s.typ.sym))
-    else:
-      result = newESIdent("", "MAYBEBUG")
-  of skLabel:
-    result = newESIdent(es.mangleName(s))
-  else:
-    #dbg "NON SPECIALIZED SYM: ", s.name.s, $s.kind
-    result = newESIdent(es.mangleName(s), s.typ.typeToString)
 
 proc genProc(es: ESGen, prc: PSym) =
   ## Generate a js function based on the prc ast.
@@ -463,7 +297,7 @@ proc genProc(es: ESGen, prc: PSym) =
   
   if not res.isNil:
     bdy.add(
-      newReturnStmt(es.genSym(res.sym))
+      newReturnStmt(es.gen(res, bdy))
     )
 
   ESBackend(es.graph.backend).ast.add( #CHECK:ME can I use stmntbody
@@ -471,7 +305,8 @@ proc genProc(es: ESGen, prc: PSym) =
       newESIdent(mangleName(es, prc), if res.isNil: "" else: resT.typeToString),
       bdy,
       params,
-      card(prc.flags*{sfExported, sfExportc}) > 0 and (prc.owner.kind == skModule)
+      card(prc.flags*{sfExported, sfExportc}) > 0 and (prc.owner.kind == skModule),
+      loc = es.infoToSL(prc.info)
     )
   )
 
@@ -487,6 +322,351 @@ proc prepareMagic(es: ESGen, name: string): ESNode =
     result = newESIdent(es.mangleName(s))
   else:
     es.translError("system module needs: " & name)
+
+proc newExcTypeDecl*(name: ESNode, exp:bool, fields: varargs[ESNode]): ESNode =
+    # function ValueError_1214642({parent = null, name = "", msg = [], trace = [], up = null}={}) {
+    #   let e = new Error()
+    #   e.parent = parent
+    #   e.name = name
+    #   e.message = msg # should convert to cstring?
+    #   e.trace = trace
+    #   e.up = up
+    #   return e
+    # }
+
+  var bdy = newBlockStmt()
+  bdy.add(
+    newVarDecl(
+      esLet, false, [newVarDeclarator(
+        newESIdent("err"),
+        newNewExpr(newESIdent("Error"))
+      )]
+    )
+  )
+  for field in fields:
+    if field.key.typ == ekIdentifier and field.key.name == "name":
+      bdy.add(
+        newAsgnExpr("=", newMemberExpr(newESIdent("err"), field.key, computed=true), newESLiteral(name.name))
+      )
+    else:
+      bdy.add(
+        newAsgnExpr("=", newMemberExpr(newESIdent("err"), field.key, computed=true), field.key)
+      )
+  bdy.add(newReturnStmt(newESIdent("err")))
+  result = newESFuncDecl(
+    id=name,
+    body=bdy,
+    [newObjectExpr(fields)],
+    exp
+  )
+
+proc newObjTypeDecl*(name: ESNode, exp:bool, fields: varargs[ESNode]): ESNode =
+  # function Car({make, model, year}={make:"Unknwown",model:"Unknown",year:-1}) {
+  #     this.make = make;
+  #     this.model = model;
+  #     this.year = year;
+  #     Object.seal(this);
+  # }
+
+  #TODO: what about reccase obj
+  
+  #TODO: assert isproperty...
+
+  var bdy = newBlockStmt()
+  for field in fields:
+    bdy.add(
+      newAsgnExpr("=", newMemberExpr(newThisExpr(), field.key, computed=true), field.key)
+    )
+  bdy.add(
+    newMemberCallExpr(newESIdent("Object"), newESIdent("seal"), newESIdent("this"))
+  )
+  result = newESFuncDecl(
+    id=name,
+    body=bdy,
+    [newObjectExpr(fields)],
+    exp
+  )
+
+proc genCaseObjTypeDecl*(name: ESNode, exp:bool, fields: varargs[ESNode]): ESNode =
+  # function Car({make, model, year}={make:"Unknwown",model:"Unknown",year:-1}) {
+  #     this.make = make;
+  #     this.model = model;
+  #     this.year = year;
+  #     Object.seal(this);
+  # }
+
+  #TODO: what about reccase obj
+  
+  #TODO: assert isproperty...
+
+  var bdy = newBlockStmt()
+  for field in fields:
+    bdy.add(
+      newAsgnExpr("=", newMemberExpr(newThisExpr(), field.key, computed=true), field.key)
+    )
+  bdy.add(
+    newMemberCallExpr(newESIdent("Object"), newESIdent("seal"), newESIdent("this"))
+  )
+  result = newESFuncDecl(
+    id=name,
+    body=bdy,
+    [newObjectExpr(fields)],
+    exp
+  )
+
+
+proc genExcObjFunction(es: ESGen, t: PType, stmntbody: var ESNode, loc: SourceLocation = nil)=
+
+    var tt = t
+    assert t.isException, $t.kind
+    assert(tt != nil)
+
+    tt = tt.skipTypes(abstractInst)
+    while tt.kind == tyObject:
+      if tt.sym != nil and tt.sym.magic == mException: break
+      if tt[0] == nil: break
+      tt = skipTypes(tt[0], abstractPtrs)
+    if tt.isNil: translError(es, "genExcObj" & $t.kind)
+    
+    var fields : seq[ESNode] = @[]
+    for i, reclst in tt.n:
+      #dbg "RECLIST", $reclst.typ
+      #dbg es.config.treeToYaml(reclst)
+      fields.add(
+        newProperty(es.gen(reclst, stmntbody), es.genDefaultLit(reclst.typ))
+      )
+    
+    es.graph.backend.ESBackend.ast.add newExcTypeDecl(
+      newESIdent(t.sym.name.s), false#[t.sym.exportOrUsed]#, fields
+    )
+
+proc genEnumRepr(es: ESGen, t: PType) =
+  let nsl = es.prepareMagic("esNimStrLit")
+  var fields = newArrayExpr()
+  for f in t.n:
+    fields.add( newCallExpr( nsl, newESLiteral( makeJSString(f.sym.name.s)) ) )
+  es.graph.backend.ESBackend.ast.add(
+    newVarDecl(esConst,false, 
+      [newVarDeclarator(newESIdent(es.mangleName(t.sym)), fields)]
+    )
+  )
+
+proc genRecList(es: ESGen, n: PNode, fields: var seq[ESNode]) : ESNode =
+  ## type
+  ## D = enum
+  ##   a,b,c,d,e,f
+  ## A = object
+  ##   a: string
+  ##   case k:D
+  ##   of a: x: int
+  ##   of b,c: y: float
+  ##   of d..e: 
+  ##     w: float
+  ##     l: int
+  ##   else: z: string
+  ## function A({a,k,x,y,w,l,z)={}){
+  ##   this.a = a
+  ##   this.k = k
+  ##   switch (this.k)
+  ##   case a:
+  ##     this.x = x
+  ##     break
+  ##   case b:
+  ##   case c:
+  ##     this.y = y
+  ##     break
+  ##   case d:
+  ##   case e:
+  ##     this.w = w
+  ##     this.l = l
+  ##     break
+  ##   default:
+  ##     this.z = z
+  ## }
+  
+  result = newBlockStmt()
+  case n.kind
+  of nkRecList:
+    for i in 0..<n.len:
+      result.add genRecList(es, n[i], fields)
+  of nkRecCase:
+    result.add genRecList(es, n[0], fields)
+    for i in 1..<n.len:
+      result.add genRecList(es, lastSon(n[i]), fields)
+  of nkSym:
+    # Do not produce code for void types
+    if isEmptyType(n.sym.typ): return
+    if n.sym.flags.contains(sfDiscriminant): # initialize discriminant to null to avoid false positives when checking set.has(disc)
+      #dbg "isdisc", $n.sym.kind
+      fields.add(
+          newProperty(es.gen(n, result), newESEmitExpr("null"))
+      )
+    else:
+      fields.add(
+          newProperty(es.gen(n, result), es.genDefaultLit(n.sym.typ))
+      )
+    result.add(
+      newAsgnExpr("=", newMemberExpr(newThisExpr(), fields[^1].key, computed=true), fields[^1].key)
+    )
+  else: internalError(es.config, n.info, "createRecordVarAux")
+
+
+proc genCaseObjTypeInfo(es: ESGen, t: PType, stmntbody: var ESNode, loc: SourceLocation = nil) : ESNode=
+  ## Note that objects are sealed, ie you can't add or remove properties.
+  ## Values of existing properties can still be changed.
+  ## type A = object
+  ##   x: string
+  ## becomes
+  ## function A({x=""}={}){
+  ##   this.x = x
+  ##   Object.seal(this);
+  ## }
+  # TODO: should be vv ?
+  # function Car({make /*string*/, model/*string*/, year}={make:"",model:"",year:0}) {
+  #     this.make = make;
+  #     this.model = model;
+  #     this.year = year;
+  #     Object.seal(this);
+  # }
+
+  var fields : seq[ESNode] = @[]
+  var bdy = newBlockStmt()
+  for i, reclst in t.n:
+    bdy.add es.genRecList(reclst, fields)
+  
+  bdy.add(
+    newMemberCallExpr(newESIdent("Object"), newESIdent("seal"), newESIdent("this"))
+  )
+  result = newESFuncDecl(
+    id=newESIdent(es.mangleName(t.sym)),
+    body=bdy,
+    [newObjectExpr(fields)],
+    false #exp
+  )
+
+
+
+
+proc genObjTypeInfo(es: ESGen, t: PType, stmntbody: var ESNode, loc: SourceLocation = nil) : ESNode=
+  ## Note that objects are sealed, ie you can't add or remove properties.
+  ## Values of existing properties can still be changed.
+  ## type A = object
+  ##   x: string
+  ## becomes
+  ## function A({x=""}={}){
+  ##   this.x = x
+  ##   Object.seal(this);
+  ## }
+  # TODO: should be vv ?
+  # function Car({make /*string*/, model/*string*/, year}={make:"",model:"",year:0}) {
+  #     this.make = make;
+  #     this.model = model;
+  #     this.year = year;
+  #     Object.seal(this);
+  # }
+
+  var fields : seq[ESNode] = @[]
+  for i, reclst in t.n:
+    #dbg "RECLIST", $reclst.typ
+    #dbg es.config.treeToYaml(reclst)
+    fields.add(
+      newProperty(es.gen(reclst, stmntbody), es.genDefaultLit(reclst.typ))
+    )
+
+  var bdy = newBlockStmt()
+  for field in fields:
+    bdy.add(
+      newAsgnExpr("=", newMemberExpr(newThisExpr(), field.key, computed=true), field.key)
+    )
+  bdy.add(
+    newMemberCallExpr(newESIdent("Object"), newESIdent("seal"), newESIdent("this"))
+  )
+  result = newESFuncDecl(
+    id=newESIdent(es.mangleName(t.sym)),
+    body=bdy,
+    [newObjectExpr(fields)],
+    false #exp
+  )
+
+proc genDefaultLit(es: ESGen, typ: PType): ESNode =
+  ## Generate a literal with default value for when we do things like
+  ## var x : int
+  ## Specifically:
+  ## etyInt -> 0
+  ## etyFloat -> 0.0
+  ## etyBool -> false
+  ## etyString -> ""
+  ## etyObject -> {}
+  ## etyArray -> []
+  ## etyNull, etyProc -> null
+  ## etyPointer -> null
+  if isEmptyType(typ):
+    dbg es.config.typeToYaml(typ)
+    translError(es, "isEmptyType")
+  case mapType(typ)
+  of etyNull, etyProc, etyPointer:
+    result = newESEmitExpr("null")
+  of etyBool:
+    result = newESLiteral(false)
+  of etyArray:
+    result = newArrayExpr()
+  of etyInt:
+    result = newESLiteral(0)
+  of etyFloat:
+    result = newESLiteral(0.0)
+  of etyString:
+    result = newESLiteral("")
+  of etyObject:
+    case typ.kind
+    of tyTuple:
+      result = newObjectExpr()
+    of tyObject:
+      let b = es.graph.backend.ESBackend
+      if not b.generatedTypeInfos.containsOrIncl(typ.sym.id):
+        if typ.n.isCaseObj:
+          b.ast.add(
+            es.genCaseObjTypeInfo(typ, b.ast) # TODO:just don't return the function? or return just the ident?
+          )
+        else:
+          b.ast.add(
+            es.genObjTypeInfo(typ, b.ast) # TODO:just don't return the function? or return just the ident?
+          )
+      result = newNewExpr(newESIdent(es.mangleName(typ.sym)))
+    of tySet:
+      result = newNewExpr(newESIdent("Set"))
+    else:
+      translError(es, "etyObject shouldn't be " & $typ.kind & ", " & typ.typeToString)
+  else:
+    dbg es.config.typeToYaml(typ)
+    translError(es, "etyNone literal" & $typ.kind)
+
+proc genSym(es: ESGen, s: PSym, wantBaseSym = false): ESNode =
+  ## Generate a symbol.
+  ## If it's a type, make sure the the corresponding function `typ.sym` exists first.
+  ## Otherwise, produce sym
+  #dbg es.config.symToYaml(s)
+  case s.kind
+  of skType:
+    #dbg "SYMTYP"
+    if s.typ.mapType == etyObject:
+      if not es.graph.backend.ESBackend.generatedTypeInfos.containsOrIncl(s.id):
+        if s.typ.skipTypes(skipPtrs).isException:
+          es.genExcObjFunction(s.typ, es.graph.backend.ESBackend.ast)
+        elif s.typ.n.isCaseObj:
+          es.graph.backend.ESBackend.ast.add(es.genCaseObjTypeInfo(s.typ, es.graph.backend.ESBackend.ast))
+        else:
+          es.graph.backend.ESBackend.ast.add(es.genObjTypeInfo(s.typ, es.graph.backend.ESBackend.ast))
+      if s.typ.skipTypes(skipPtrs).isException:
+        result = newESIdent(s.typ.sym.name.s, loc = es.infoToSL(s.info))
+      else:
+        result = newESIdent(es.mangleName(s.typ.sym), loc = es.infoToSL(s.info))
+    else:
+      result = newESIdent("", "MAYBEBUG", loc = es.infoToSL(s.info))
+  of skLabel:
+    result = newESIdent(es.mangleName(s),loc = es.infoToSL(s.info))
+  else:
+    #dbg "NON SPECIALIZED SYM: ", s.name.s, $s.kind
+    result = newESIdent(es.mangleName(s), s.typ.typeToString,loc = es.infoToSL(s.info))
     
 proc isSimpleExpr(n: PNode): bool =
   # TODO: ignored currently
@@ -524,7 +704,7 @@ proc genBinaryAsgnExpr(es: ESGen, operator: string, n: PNode, stmntbody: var ESN
   ## Generate a binary asgn js expression, such as `a += b`
   let a = n[1]
   let b = n[2]
-  dbg es.config.treeToYaml(a)
+  #dbg es.config.treeToYaml(a)
   result = newAsgnExpr(operator, es.gen(a, stmntbody), es.gen(b, stmntbody))
   if isSimpleExpr(a) and isSimpleExpr(b):
     dbg "TODO: genBinaryAsgnExpr complex expr"
@@ -575,6 +755,7 @@ proc magicToProc(magic: TMagic): string =
   of mNewString: "esNewString"
   of mNewSeq: "esNewSeq"
   of mIsNil: "esIsNil"
+  of mEnumToStr: "reprEnum"
   else:  ""
     
 
@@ -756,8 +937,17 @@ proc genMagic(es: ESGen, n: PNode, stmntbody: var ESNode, loc: SourceLocation = 
       newMemberExpr(es.gen(n[1],stmntbody), newESIdent("length"), true),
       es.gen(n[2], stmntbody)
     )    
+  of mEnumToStr: 
+    #dbg es.config.treeToYaml(n)
+    #dbg es.config.typeToYaml(n[1].typ)
+    es.genEnumRepr(n[1].typ)
+    result = newMemberExpr(newESIdent(es.mangleName(n[1].typ.sym)), es.gen(n[1], stmntbody), false)
   of mIsNil:
     result = es.genMagicCall(n, stmntbody)
+  of mInSet:
+    #dbg "INSET"
+    #dbg es.config.treeToYaml(n[2])
+    result = newMemberCallExpr(es.gen(n[1], stmntbody), newESIdent("has"), es.gen(n[2], stmntbody))
     #[
   of mShlI: 
     if n[1].typ.size <= 4:
@@ -929,52 +1119,51 @@ proc genObjConstrCall(es: ESGen, n: PNode, stmntbody: var ESNode, loc: SourceLoc
   if n.typ.isNil: es.translError(n, "Empty type for nkobjconstr")
 
   #dbg es.config.treeToYaml(n)
-  if n[0].kind != nkSym: # ie a nkPar, eg (ref ValueError)(msg: "wrong value")
-    let baseT = n[0].typ.skipTypes(skipPtrs)
-    dbg "OBJC ", $n[0].typ.kind, " ", $n.typ.kind
-    
-    if not es.graph.backend.ESBackend.generatedTypeInfos.containsOrIncl(baseT.sym.id):
-      if baseT.isException:
-        es.genExcObjFunction(baseT, stmntbody)
+  #if n[0].kind != nkSym: # ie a nkPar, eg (ref ValueError)(msg: "wrong value")
+  let baseT = n[0].typ.skipTypes(skipPtrs)
+  #dbg "OBJC ", $n[0].typ.kind, " ", $n.typ.kind
+  if not es.graph.backend.ESBackend.generatedTypeInfos.containsOrIncl(baseT.sym.id):
+    if baseT.isException:
+      es.genExcObjFunction(baseT, stmntbody)
+    elif baseT.n.isCaseObj:
+      stmntbody.add(es.genCaseObjTypeInfo(baseT, stmntbody))
+    else:
+      stmntbody.add(es.genObjTypeInfo(baseT, stmntbody))
+
+  #dbg "GOBJC", n.typ.typeToString
+  #dbg es.config.treeToYaml(n)
+  #dbg typeToYaml(es.config, n[0].typ)
+  var props = newSeq[ESNode]()
+  for i,p in n:
+    if i == 0: continue
+    props.add(newProperty(es.gen(p[0],stmntbody), es.gen(p[1],stmntbody)))
+
+  if n.typ.kind in skipPtrs: # skipPtrs is a set of ptr typekinds
+    #dbg n.typ.typeToString, "EXCESTR"
+    let callExpr = if baseT.isException:
+        newCallExpr(
+          newESIdent(baseT.sym.name.s), [newObjectExpr(props)]
+        )
       else:
-        stmntbody.add(es.genObjTypeInfo(baseT, stmntbody))
+        newNewExpr(
+          newESIdent(es.mangleName(baseT.sym)), [newObjectExpr(props)]
+        )
 
-    dbg "GOBJC", n.typ.typeToString
-    #dbg es.config.treeToYaml(n)
-    #dbg typeToYaml(es.config, n[0].typ)
-    var props = newSeq[ESNode]()
-    for i,p in n:
-      if i == 0: continue
-      props.add(newProperty(es.gen(p[0],stmntbody), es.gen(p[1],stmntbody)))
-  
-    if n.typ.kind in skipPtrs: # skipPtrs is a set of ptr typekinds
-
-      let callExpr = if baseT.isException:
-          newCallExpr(
-            newESIdent(baseT.sym.name.s), [newObjectExpr(props)]
-          )
-        else:
-          newNewExpr(
-            newESIdent(es.mangleName(baseT.sym)), [newObjectExpr(props)]
-          )
-
-        
-
-      let addrsym = es.prepareMagic("esAddr")
-      let tmp = "tmp_ref" & $es.getAndIncTempCount
-      stmntbody.add newVarDecl( 
-        # TODO fix stmntbody to be parent stmt, not ast
-        esLet,
-        exported = false,
-        [newVarDeclarator(newESIdent(tmp, baseT.typeToString), callExpr)]
-      )
-      result = newESEmitExpr(
-        render(addrsym) & "(() => { return " & tmp & "; }, (v) => { " & tmp & " = v; })"
-      )
-    elif n.typ.kind == tyObject:
-      result = newNewExpr(
-        newESIdent(es.mangleName(n[0].sym)), [newObjectExpr(props)]
-      )
+    let addrsym = es.prepareMagic("esAddr")
+    let tmp = "tmp_ref" & $es.getAndIncTempCount
+    stmntbody.add newVarDecl( 
+      # TODO fix stmntbody to be parent stmt, not ast
+      esLet,
+      exported = false,
+      [newVarDeclarator(newESIdent(tmp, baseT.typeToString), callExpr)]
+    )
+    result = newESEmitExpr(
+      render(addrsym) & "(() => { return " & tmp & "; }, (v) => { " & tmp & " = v; })"
+    )
+  elif n.typ.kind == tyObject:
+    result = newNewExpr(
+      newESIdent(es.mangleName(n.typ.sym)), [newObjectExpr(props)]
+    )
 
 proc genTupleConstr(es: ESGen, n: PNode, stmntbody: var ESNode, loc: SourceLocation = nil): ESNode =
   ## var x = (x:1,x:2)
@@ -1100,6 +1289,7 @@ proc genCallOrMagic(es: ESGen, n: PNode, stmntbody: var ESNode, loc: SourceLocat
   ## A nkCall node, dispatch to the right path if a magic is present
   dbg "SYMID: ", n[0].sym.id, " name ", mangleName(es, n[0].sym), " magic ", n[0].sym.magic
   if (n[0].kind == nkSym) and (n[0].sym.magic != mNone):
+    #dbg renderTree(n)
     if n[0].sym.magic == mNew:
       # new is a exprstatement in nim, but for js we need multiple stmts
       result = genMagic(es, n, stmntbody)
@@ -1260,6 +1450,47 @@ proc genDotExpr(es: ESGen, n: PNode, stmntbody: var ESNode, loc: SourceLocation 
     es.gen(n[0],stmntbody), es.gen(n[1],stmntbody), true
   )
 
+proc genCheckedFieldExpr(es: ESGen, n: PNode, stmntbody: var ESNode, loc: SourceLocation = nil): ESNode =
+  ## Checked field access, eg x.w where w is a case obj in k
+  ## In plain code, this would be
+  ## x.w <- desired field to check
+  ## contains(setofvalidkvalues, k) <- checking op
+  ## so we need to rewrite this to
+  ## checkedField(x.w, contains(validk, x.k))
+  ## where checkedField to something like (js)
+  ## (validk.has(x.k) ? x.w : raiseFieldError())
+
+  dbg "CHECKEDFIELDEXPR"
+  dbg renderTree(n, {renderNoComments, renderIr})
+  # x
+  #dbg es.config.treeToYaml(n)
+  let validN = n[0]
+  var checkExpr = n[1]
+  let negCheck = checkExpr[0].sym.magic == mNot
+  if negCheck:
+    checkExpr = checkExpr[^1]
+  
+  let disc = newMemberCallExpr(  
+    es.gen(checkExpr[1], stmntbody),
+    newESIdent("has"),
+    newMemberExpr(es.gen(validN[0],stmntbody), es.gen(checkExpr.lastSon,stmntbody), true)    
+  )
+  
+  let valid = es.gen(validN, stmntbody)
+  let rfe = es.prepareMagic("raiseFieldError")
+  let toStr = es.prepareMagic("esNimStrLit")
+  let invalid = newCallExpr(
+    rfe, 
+    newCallExpr(toStr, 
+      #newESLiteral(makeJSString("field {} of variant object {} of type {} is not accesible when discriminant is {}"))
+      newESLiteral(makeJSString(
+        genFieldDefect(validN[1].sym,checkExpr.lastSon.sym)
+      ))
+    )
+  )
+  result = newCondExpr( disc, valid, invalid )
+
+
 proc genAddr(es: ESGen, n: PNode, stmntbody: var ESNode, loc: SourceLocation = nil): ESNode =
   ## Addressing only works for `var`s, specifically it can be either
   ## a nim `var` or a param passed by `var T`
@@ -1367,7 +1598,7 @@ proc genPragma(es: ESGen, n: PNode, stmntbody: var ESNode, loc: SourceLocation =
       elif el.kind == nkSym:
         emitstr.add(render(genSym(es, el.sym, wantBaseSym=false)))
       else: discard
-    result = newESEmitExpr(emitstr)
+    result = newESEmitExpr(emitstr.unindent)
   else: 
     message(es.config, n.info, warnUser, "maybe unhandled pragma")
     result = newEmptyStmt()
@@ -1383,7 +1614,7 @@ proc genAsm(es: ESGen, n: PNode, stmntbody: var ESNode, loc: SourceLocation = ni
     elif el.kind == nkSym:
       emitstr.add(render(genSym(es, el.sym, wantBaseSym=false)))
     else: discard
-  result = newESEmitExpr(emitstr)
+  result = newESEmitExpr(emitstr.unindent)
 
 proc genRaise(es: ESGen, n: PNode, stmntbody: var ESNode, loc: SourceLocation = nil): ESNode =
   ## Raise a nim exception. They are mapped to a js `throw` plus some wrapping for stacktraces
@@ -1663,6 +1894,9 @@ proc gen(es: ESGen, n: PNode, stmntbody: var ESNode, loc: SourceLocation = nil):
     #dbg "CAST"
     #dbg es.config.treeToYaml(n)
     result = es.gen(n[1], stmntbody)
+  of nkCheckedFieldExpr:
+    #dbg es.config.treeToYaml(n)
+    result = es.genCheckedFieldExpr(n, stmntbody)
   else: 
     dbg es.config.treeToYaml(n)
     translError(es, n, "gen: unknown node kind")
@@ -1672,14 +1906,12 @@ proc gen(es: ESGen, n: PNode, stmntbody: var ESNode, loc: SourceLocation = nil):
   #[
   of nkClosure:
   of nkPar:
-  of nkCheckedFieldExpr:
   of nkObjDownConv:
   of nkObjUpConv:
   of nkCast:
   of nkLambdaKinds
   of nkType:
   of nkBlockExpr:
-  of nkTryStmt, nkHiddenTryStmt:
   ]#
 
 proc myProcess(b: PPassContext, n: PNode): PNode =
