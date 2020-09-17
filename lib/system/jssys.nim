@@ -45,28 +45,116 @@ else:
 {.push stacktrace: off, profiler:off.}
 
 when defined es:
+  
+  {.emit: """
+  function jsdeepcopyImpl() {
+    // based on rfdc
+    var refs = []
+    var refsNew = []
+
+    return cloneProto
+
+    function cloneArray (a, fn) {
+      var keys = Object.keys(a)
+      var a2 = new Array(keys.length)
+      for (var i = 0; i < keys.length; i++) {
+        var k = keys[i]
+        var cur = a[k]
+        if (typeof cur !== 'object' || cur === null) {
+          a2[k] = cur
+        } else if (cur instanceof Date) {
+          a2[k] = new Date(cur)
+        } else {
+          var index = refs.indexOf(cur)
+          if (index !== -1) {
+            a2[k] = refsNew[index]
+          } else {
+            a2[k] = fn(cur)
+          }
+        }
+      }
+      return a2
+    }
+
+    function cloneProto (o) {
+      if (typeof o !== 'object' || o === null) return o
+      if (o instanceof Date) return new Date(o)
+      if (Array.isArray(o)) return cloneArray(o, cloneProto)
+      var o2 = {}
+      refs.push(o)
+      refsNew.push(o2)
+      for (var k in o) {
+        var cur = o[k]
+        if (typeof cur !== 'object' || cur === null) {
+          o2[k] = cur
+        } else if (cur instanceof Date) {
+          o2[k] = new Date(cur)
+        } else {
+          var i = refs.indexOf(cur)
+          if (i !== -1) {
+            o2[k] = refsNew[i]
+          } else {
+            o2[k] = cloneProto(cur)
+          }
+        }
+      }
+      refs.pop()
+      refsNew.pop()
+      return o2
+    }
+  }
+  const deepcopy = jsdeepcopyImpl()
+  """.}
+
+  proc deepCopy*[T](orig: T): T {.importc: "deepcopy".}
+
+when defined es:
   # can't have generic procs here as those don't generate a symbol but 
-  # an ident when going through emit
-  # the [0] is because var in js are boxed in arrays: [val]
+  # an ident when going through emit. But what if we could mangle to the same ident?
+  # then they would work. TODO:?
   proc esNimStrLit(c: cstring): string {.compilerproc, asmNoStackFrame.} =
-    {.emit: [result, " = [...(new TextEncoder).encode(", c, ")]"].}
+    {.emit: """`result` = [...(new TextEncoder).encode(`c`)]""".}
   proc esNimStrToJsStr(c: string): cstring {.compilerproc, asmNoStackFrame.} =
-    {.emit: [result, " = (new TextDecoder).decode(new Uint8Array(", c, "))"].}
+    {.emit: """`result` = (new TextDecoder).decode(new Uint8Array(`c`))""".}
   proc esNewString(len: int): string {.asmNoStackFrame, compilerproc.} =
-    {.emit: [result," = new Array(",len,");"].}
-  proc esNewSeq(len: int): seq {.asmNoStackFrame, compilerproc.} =
-    {.emit: [result," = new Array(",len,");"].}
+    {.emit: """`result` = new Array(`len`);""".}
+  proc esSetLenSeq(res: var seq[int], len: int, def:int){.asmNoStackFrame, compilerproc.} =
+    # int is used as a generic type to make sure we are dealing with symbols in the codegen, otherwise
+    # we get ident that we don't mangle.
+    var i : int
+    var L : int
+    asm """`i` = `res`.length"""
+    asm """`res`.length = `len`"""
+    asm """`L`=`res`.length"""
+    while i < L:
+      asm """
+      `res`[`i`] = deepcopy(`def`)"""
+      inc i
+  proc esNewSeq(res: var seq[int], len: int, def:int){.asmNoStackFrame, compilerproc.} =
+    # int is used as a generic type to make sure we are dealing with symbols in the codegen, otherwise
+    # we get ident that we don't mangle.
+    # Overall, this is a mess due to somehow not getting a var seq, but the seq itself.
+    # Is it missing an nkHiddenAddr somewhere?
+    #res.setLen(len)
+    #
+    asm """`res`.length = `len`"""
+    var i = 0
+    var L : int
+    asm """`L`=`res`.length"""
+    while i < L:
+      asm """
+      `res`[`i`] = deepcopy(`def`)"""
+      inc i
   proc esNimFloatToNimStr(num: float): string {.asmNoStackFrame, compilerproc.} =
-    {.emit: ["if (Number.isInteger(", num,")) {\n  return [...(new TextEncoder).encode(",num," + '.0')];\n} else {\n  return [...(new TextEncoder).encode(",num,".toString())];\n}"].}
+    {.emit: """if (Number.isInteger(`num`)) { return [...(new TextEncoder).encode(`num` + '.0')];} else { return [...(new TextEncoder).encode(`num`.toString())];}""".}
   proc esNimIntToNimStr(num: int): string {.asmNoStackFrame, compilerproc.} =
-    {.emit: [result," = [...(new TextEncoder).encode(", num, ".toString())];"].}
+    {.emit: """`result` = [...(new TextEncoder).encode(`num`.toString())];""".}
   proc esAppendArrArr[T](x: var openArray[T], y:openArray[T]) {.asmNoStackFrame, compilerproc.} =
-    {.emit: [ x,".push.apply(", y, ");" ].}
+    {.emit: """`x`.push.apply(`y`);""".}
   proc esAddr(d: proc(x:int), a: proc():int): ptr int {.compilerproc.} =
     asm """`result` = { get deref() { return `d`(); }, set deref(v) { `a`(v); } };"""
   proc esIsNil(x: pointer):bool {.asmNoStackFrame, compilerproc.} =
     result = x == nil
-    #asm "`result` = `x` == null; //TODO: this needs help by deref" #"""
   proc nimExcToJsErr(e: Exception): PJSError {.compilerproc.} =
     asm """
     `result` = `e`
