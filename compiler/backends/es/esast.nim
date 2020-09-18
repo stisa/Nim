@@ -539,6 +539,17 @@ proc newESFuncDecl*(id,body:ESNode, params:openArray[ESNode], exp: bool=false, l
   result.params = @params
   result.body = body
 
+proc newESFuncExpr*(body: ESNode, params: openArray[ESNode], id=newESIdent("anon"), loc: SourceLocation = nil): ESNode =
+  result = newESNode(ekFunctionExpression,loc)
+  assert id.typ == ekIdentifier, $id.typ
+  assert body.typ == ekBlockStatement, $body.typ
+  for el in params: assert el.isPattern, $el.typ
+  
+  result.params = @params
+  result.body = body
+  result.id = id
+
+
 proc newESEmitExpr*(code:string, loc:SourceLocation=nil):ESNode =
   result = newESNode(ekEmit, loc)
   result.code = code

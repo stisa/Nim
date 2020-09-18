@@ -84,6 +84,13 @@ proc renderFunc(f:ESNode, indlvl=0):string =
     if i!=f.params.len-1: add result , ", "
   add result, ") {\n$1\n} /*$2*/" % [render(f.body).indent(indlvl+2), f.id.ptyp]
 
+proc renderFuncExpr(f:ESNode, indlvl=0):string =
+  result = fmt"function /*{render(f.id)}*/("
+  for i,par in f.params:
+    add result, renderParam(par,indlvl)
+    if i!=f.params.len-1: add result , ", "
+  add result, ") {$1} /*$2*/" % [render(f.body), f.id.ptyp]
+
 proc renderExprStmt(e:ESNode, indlvl=0):string =
   (render(e.expression) & ";").indent(indlvl)
 
@@ -305,7 +312,9 @@ proc render*(en:ESNode, indlvl=0):string =
     add result, renderProgram(en, indlvl)
   of ekModule:
     add result, renderModule(en, indlvl)
-  of ekFunction,ekFunctionDeclaration,ekFunctionExpression:
+  of ekFunctionExpression:
+    add result, renderFuncExpr(en, indlvl)
+  of ekFunction,ekFunctionDeclaration:
     add result, renderFunc(en, indlvl)
   of ekExpressionStatement:
     add result, renderExprStmt(en, indlvl)

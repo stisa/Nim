@@ -1362,8 +1362,10 @@ proc genLit(es: ESGen, n: PNode, stmntbody: var ESNode, loc: SourceLocation = ni
 proc genCallOrMagic(es: ESGen, n: PNode, stmntbody: var ESNode, loc: SourceLocation = nil): ESNode =
   ## A nkCall node, dispatch to the right path if a magic is present
   dbg "SYMID: ", n[0].sym.id, " name ", mangleName(es, n[0].sym), " magic ", n[0].sym.magic
-  if n[0].sym.flags.contains(sfImportc):
+  if n[0].sym.flags.contains(sfImportc) or n[0].sym.typ.kind == tyProc:
     es.graph.backend.ESBackend.generatedProcs.incl(n[0].sym.id)
+  
+  #dbg n[0].sym.typ.typeToString
 
   if (n[0].kind == nkSym) and (n[0].sym.magic != mNone):
     #dbg renderTree(n)
@@ -1847,20 +1849,18 @@ proc genCStringToString(es: ESGen, n: PNode, stmntbody: var ESNode, loc: SourceL
   let id = es.prepareMagic("esNimStrLit")
   result = newCallExpr(id, es.gen(n[0],stmntbody))
 
-
 proc genRangeCheck(es: ESGen, n: PNode, stmntbody: var ESNode, loc: SourceLocation = nil): ESNode =
   ## Check the number is in the specified range. See jssys chckRange
   let id = es.prepareMagic("chckRange")
   #dbg es.config.treeToYaml(n)
   result = newCallExpr(id, [es.gen(n[0],stmntbody),es.gen(n[1],stmntbody),es.gen(n[2],stmntbody)])
 
-
 proc genReturnStmt(es: ESGen, n: PNode, stmntbody: var ESNode, loc: SourceLocation = nil): ESNode =
   ## Generate a return statement
   ## If n[0] is an assignment, generate first the assignment return result
   ## else generate return(gen(n[0]))
-  #dbg "RNTMNR", n.kind
 
+  #dbg "RNTMNR", n.kind
   if n[0].kind == nkAsgn:
     # result = rhs
     # return res
@@ -1888,7 +1888,6 @@ proc genBreakStmt(es: ESGen, n: PNode, stmntbody: var ESNode, loc: SourceLocatio
     result = newBreakStmt(newEmptyStmt())
   else: result = newBreakStmt(es.gen(n[0], stmntbody))
 
-
 proc genConv(es: ESGen, n: PNode, stmntbody: var ESNode, loc: SourceLocation = nil): ESNode =
   ## Convert between types. Largely unneeded in js, but should probably at least handle
   ## objects with a js type, typedarrays that need casting between types, and strings/chars.
@@ -1912,6 +1911,64 @@ proc genConv(es: ESGen, n: PNode, stmntbody: var ESNode, loc: SourceLocation = n
   else:
     dbg "#non sym conv type target", $n[0].kind
     result = es.gen(n[1], stmntbody)#TODO: figure out conv of non basic types?
+
+proc genLambda(es: ESGen, n: PNode, stmntbody: ESNode): ESNode =
+  ## var a = proc(x:int) = echo x
+  ## let a = (x) => `echo`(x) or function(x){`echo`(x)}
+  let prc = n[0].sym
+  
+  es.graph.backend.ESBackend.generatedProcs.incl(prc.id)
+
+  let res = if prc.ast.len > resultPos :prc.ast[resultPos] else: nil
+  dbg prc.typ.typeToString
+  let resT = prc.getReturnType
+  var bdy = newBlockStmt()
+  if not res.isNil:
+    #dbg "RT::"
+    #dbg es.config.typeToYaml(resT)
+    bdy.add(
+      newVarDecl(esLet, false,
+        [newVarDeclarator(
+          newESIdent(es.mangleName(res.sym), resT.typeToString), es.genDefaultLit(resT)
+        )]
+      )
+    )
+  
+  # handle params first so change loc is there when generating the body
+  let declparams = prc.typ.n
+  var params = newSeq[ESNode](declparams.len-1)
+  
+  for i, p in declparams:
+    if i == 0: continue
+    if p.sym.ast.isNil: # no default value
+      params[i-1] = newESIdent(mangleName(es, p.sym), p.sym.typ.typeToString)
+    else:
+      params[i-1] = newVarDeclarator(newESIdent(mangleName(es, p.sym), p.sym.typ.typeToString), es.gen(p.sym.ast, bdy)) #body is wrong? 
+
+  var trandiscarded = newBlockStmt()
+  # FIXME: looks like this gen generates some wrong parts
+  # added directly to the var body passed in, so we store that in
+  # trandiscarded and then ignore that
+  var transfBody = transformBody(es.graph, prc, cache = false)
+  if sfInjectDestructors in prc.flags:
+    transfBody = injectDestructorCalls(es.graph, prc, transfBody)
+
+  bdy.add(
+    es.gen(transfBody, bdy)
+  )
+  
+  if not res.isNil:
+    bdy.add(
+      newReturnStmt(es.gen(res, bdy))
+    )
+
+  result = newESFuncExpr(
+    bdy,
+    params,
+    newESIdent(mangleName(es, prc), if res.isNil: "" else: resT.typeToString),
+    loc = es.infoToSL(prc.info)
+  )
+
 
 proc gen(es: ESGen, n: PNode, stmntbody: var ESNode, loc: SourceLocation = nil): ESNode =
   ## Big bad case stmt. Send each nodekind to its proper gen<Kind> function, ignoring some
@@ -1999,6 +2056,10 @@ proc gen(es: ESGen, n: PNode, stmntbody: var ESNode, loc: SourceLocation = nil):
   of nkWhen:
     # This is "when nimvm" node ???
     result = gen(es, n[1][0], stmntbody)
+  of nkLambdaKinds:
+    dbg es.config.treeToYaml(n)
+    stderr.write "WIP nkLambda"
+    result = es.genLambda(n, stmntbody)
   else: 
     dbg n.kind
     dbg es.config.treeToYaml(n)
