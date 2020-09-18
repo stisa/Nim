@@ -129,7 +129,7 @@ const nkGenSkippedKinds = { nkCommentStmt, nkEmpty,
                             nkIteratorDef, nkMacroDef, nkIncludeStmt, 
                             nkImportStmt, nkExportStmt, nkExportExceptStmt, 
                             nkImportExceptStmt, nkImportAs, nkConverterDef,
-                            nkIncludeStmt, nkTypeSection, nkWhenStmt}#, nkWhenStmt, nkWhenExpr }
+                            nkIncludeStmt, nkTypeSection}#, nkWhenStmt, nkWhenExpr }
 
 proc mapType(typ: PType): ESTypeKind =
   ## Map a nim type to js representation
@@ -143,7 +143,7 @@ proc mapType(typ: PType): ESTypeKind =
   ## array, seqs, string -> etyArray
   ## cstring -> etyString
   ## proc -> etyProc
-  
+  #dbg $typ.kind
   case typ.kind
   of tyVar, tyRef, tyPtr, tyLent, tyPointer:
     result = etyPointer
@@ -613,10 +613,11 @@ proc genDefaultLit(es: ESGen, typ: PType): ESNode =
   ## etyFloat -> 0.0
   ## etyBool -> false
   ## etyString -> ""
-  ## etyObject -> {}
-  ## etyArray -> []
+  ## etyObject -> {fields} (for tuples) or new Obj() for objects
+  ## etyArray -> [] (maybe filled)
   ## etyNull, etyProc -> null
   ## etyPointer -> null
+  dbg typ.typeToString
   if isEmptyType(typ):
     dbg es.config.typeToYaml(typ)
     translError(es, "isEmptyType")
@@ -627,7 +628,9 @@ proc genDefaultLit(es: ESGen, typ: PType): ESNode =
     result = newESLiteral(false)
   of etyArray:
     dbg typ.kind, typ.typeToString
+    dbg typ.lastSon.kind, typ.lastSon.typeToString
     if typ.kind == tySequence:
+      #dbg es.config.lengthOrd(typ).toInt
       result = newArrayExpr()
     elif typ.kind == tyArray:
       var els : seq[ESNode]
@@ -646,10 +649,15 @@ proc genDefaultLit(es: ESGen, typ: PType): ESNode =
   of etyObject:
     var t = typ
     if typ.kind == tyGenericInst:
-      t = t.skipTypes(abstractInst)
+      t = typ.skipTypes(abstractInst)
     case t.kind
     of tyTuple:
-      result = newObjectExpr()
+      #dbg es.config.typeToYaml(typ)
+      var props : seq[ESNode]
+      for el in t.n:
+        props.add(newProperty(newESIdent($el.sym.position), es.genDefaultLit(el.sym.typ)))
+      #dbg t.typeToString  
+      result = newObjectExpr(props)
     of tyObject:
       let b = es.graph.backend.ESBackend
       if not b.generatedTypeInfos.containsOrIncl(t.sym.id):
@@ -876,8 +884,8 @@ proc genMagic(es: ESGen, n: PNode, stmntbody: var ESNode, loc: SourceLocation = 
     result = es.genMagicCall(n, stmntbody)
   of mNewSeq:
     result = es.genMagicCall(n, stmntbody)
-    dbg n[1].typ.lastSon.typeToString, "TYPE"#case n.typ:
-    result.arguments.add(es.genDefaultLit(n[1].typ.lastSon))
+    #dbg n[1].typ.elemType.typeToString, "TYPE"#case n.typ:
+    result.arguments.add(es.genDefaultLit(n[1].typ.elemType))
   of mNew:
     #dbg "MNEW"
     #dbg es.config.treeToYaml(n)
@@ -975,7 +983,9 @@ proc genMagic(es: ESGen, n: PNode, stmntbody: var ESNode, loc: SourceLocation = 
     )
   of mSetLengthSeq: # TODO: properly initialize elements
     result = es.genMagicCall(n, stmntbody)
-    result.arguments.add(es.genDefaultLit(n[1].typ.lastSon))    
+    #dbg n[1].typ.skipTypes(abstractInst).lastSon.typeToString
+    #dbg n[1].typ.elemType.typeToString
+    result.arguments.add(es.genDefaultLit(n[1].typ.elemType))    
   of mEnumToStr: 
     #dbg es.config.treeToYaml(n)
     #dbg es.config.typeToYaml(n[1].typ)
@@ -988,23 +998,25 @@ proc genMagic(es: ESGen, n: PNode, stmntbody: var ESNode, loc: SourceLocation = 
     #dbg es.config.treeToYaml(n[2])
     result = newMemberCallExpr(es.gen(n[1], stmntbody), newESIdent("has"), es.gen(n[2], stmntbody))
   of mHigh:
-    #dbg n.typ.typeToString
-    result = newMemberExpr(
-      es.gen(n[1], stmntbody), 
-      newBinaryExpr(
+    dbg n[1].typ.typeToString
+    result = newBinaryExpr(
         "-",
         newMemberExpr(es.gen(n[1], stmntbody), newESIdent("length"), true),
         newESLiteral(1)
-      ),
-      false
     )
+    # result = newMemberExpr(
+    #   es.gen(n[1], stmntbody), 
+    #   newBinaryExpr(
+    #     "-",
+    #     newMemberExpr(es.gen(n[1], stmntbody), newESIdent("length"), true),
+    #     newESLiteral(1)
+    #   ),
+    #   false
+    # )
   of mLow:
     #dbg n.typ.typeToString
-    result = newMemberExpr(
-      es.gen(n[1], stmntbody), 
-      newESLiteral(0),
-      false
-    )
+    # TODO: non 0 based, non arraylike
+    result = newESLiteral(0)
   of mSwap:
     # [a, b] = [b, a]; es6 ftw
     result = newAsgnExpr("=",
@@ -1237,8 +1249,8 @@ proc genTupleConstr(es: ESGen, n: PNode, stmntbody: var ESNode, loc: SourceLocat
   var props = newSeq[ESNode]()
   if n[0].kind == nkExprColonExpr: # a named tuple
     for i, p in n:
-      props.add(newProperty(es.gen(p[0], stmntbody), es.gen(p[1],stmntbody)))
-      props.add(newProperty(newESIdent($i), es.gen(p[1],stmntbody)))
+      props.add(newProperty(newESIdent($p[0].sym.position), es.gen(p[1],stmntbody)))
+      #props.add(newProperty(newESIdent($i), es.gen(p[1],stmntbody)))
   else:
     for i, p in n:
       props.add(newProperty(newESIdent($i), es.gen(p,stmntbody)))
@@ -1513,12 +1525,18 @@ proc genConst(es: ESGen, n: PNode, stmntbody: var ESNode, loc: SourceLocation = 
 
 proc genDotExpr(es: ESGen, n: PNode, stmntbody: var ESNode, loc: SourceLocation = nil): ESNode =
   ## Field access, eg a.b
-  dbg "DOTEXPR"
+  #dbg "DOTEXPR"
   #dbg es.config.treeToYaml(n)
-  result = newMemberExpr(
-    es.gen(n[0],stmntbody), es.gen(n[1],stmntbody), true
-  )
-
+  #dbg n[1].sym.position
+  if n[0].typ.skipTypes(abstractInst).kind == tyTuple:
+    assert n[1].kind == nkSym, $n[1].kind
+    result = newMemberExpr(
+      es.gen(n[0],stmntbody), newESLiteral(n[1].sym.position), false
+    )
+  else:
+    result = newMemberExpr(
+      es.gen(n[0],stmntbody), es.gen(n[1],stmntbody), true
+    )
 proc genCheckedFieldExpr(es: ESGen, n: PNode, stmntbody: var ESNode, loc: SourceLocation = nil): ESNode =
   ## Checked field access, eg x.w where w is a case obj in k
   ## In plain code, this would be
@@ -1841,10 +1859,16 @@ proc genReturnStmt(es: ESGen, n: PNode, stmntbody: var ESNode, loc: SourceLocati
   ## Generate a return statement
   ## If n[0] is an assignment, generate first the assignment return result
   ## else generate return(gen(n[0]))
-  #dbg "RNTMNR"
+  #dbg "RNTMNR", n.kind
+
   if n[0].kind == nkAsgn:
+    # result = rhs
+    # return res
+    # should we just return rhs?
     #dbg es.config.treeToYaml(n)
-    result = newBlockStmt(es.gen(n[0], stmntbody))
+    result = newBlockStmt([
+      es.gen(n[0], stmntbody),
+      newReturnStmt(es.gen(n[0][0], stmntbody))])
   else:
     result = newReturnStmt(es.gen(n[0], stmntbody))
 
@@ -1972,6 +1996,9 @@ proc gen(es: ESGen, n: PNode, stmntbody: var ESNode, loc: SourceLocation = nil):
   of nkCheckedFieldExpr:
     #dbg es.config.treeToYaml(n)
     result = es.genCheckedFieldExpr(n, stmntbody)
+  of nkWhen:
+    # This is "when nimvm" node ???
+    result = gen(es, n[1][0], stmntbody)
   else: 
     dbg n.kind
     dbg es.config.treeToYaml(n)
@@ -2031,7 +2058,8 @@ proc myClose(graph: ModuleGraph; b: PPassContext, n: PNode): PNode =
     let outFile = if graph.config.isDefined("node"):
         m.config.prepareToWriteOutput().changeFileExt("mjs")
       else: m.config.prepareToWriteOutput()
-    
+    if not defined(release) and not defined(node):
+      writeFile($outFile.changeFileExt("mjs"), es.ast.render())  
     writeFile($outFile, es.ast.render())
 
 proc myOpen(graph: ModuleGraph; s: PSym): PPassContext =
