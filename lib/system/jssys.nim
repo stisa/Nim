@@ -34,13 +34,16 @@ type
 
   JSRef = ref RootObj # Fake type.
 
-var
-  framePtr {.importc, nodecl, volatile.}: PCallFrame
-  excHandler {.importc, nodecl, volatile.}: int = 0
 when not defined es:
-  var lastJSError {.importc, nodecl, volatile.}: PJSError = nil
+  var
+    framePtr {.importc, nodecl, volatile.}: PCallFrame
+    excHandler {.importc, nodecl, volatile.}: int = 0
+    lastJSError {.importc, nodecl, volatile.}: PJSError = nil
 else:
-  var lastJSError {.exportc, nodecl, volatile.}: PJSError = nil
+  var
+    framePtr {.exportc, nodecl, volatile.}: PCallFrame
+    excHandler {.exportc, nodecl, volatile.}: int = 0
+    lastJSError {.exportc, nodecl, volatile.}: PJSError = nil
 
 {.push stacktrace: off, profiler:off.}
 

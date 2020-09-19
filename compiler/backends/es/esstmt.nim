@@ -27,7 +27,7 @@ proc newWithStatement*(obj:ESNode, body:ESNode, loc:SourceLocation=nil):ESNode =
   result.body = body
 
 proc newReturnStmt*(arg:ESNode,loc:SourceLocation=nil):ESNode =
-  assert arg.isExpression or arg.typ == ekExpressionStatement, $arg.typ
+  assert arg.isExpression or arg.typ in {ekExpressionStatement, ekEmptyStatement}, $arg.typ
   result = newESNode(ekReturnStatement, loc)
   result.argument = arg
 

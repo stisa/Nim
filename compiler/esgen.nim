@@ -84,6 +84,8 @@ template dbg(str: varargs[string, `$`]) =
   else:
     discard
 
+template backend(es: ESGen): ESBackend = es.graph.backend.ESBackend
+
 proc hasProc(b: ESBackend, s: PSym): bool =
   b.generatedProcs.contains(s.id)
 
@@ -121,8 +123,8 @@ proc exportOrUsed(s: PSym): bool =
   )
 
 proc getAndIncTempCount(es: ESGen): int =
-  result = es.graph.backend.ESBackend.tmpcount
-  inc es.graph.backend.ESBackend.tmpcount
+  result = es.backend.tmpcount
+  inc es.backend.tmpcount
 
 const nkGenSkippedKinds = { nkCommentStmt, nkEmpty, 
                             nkTemplateDef, nkFuncDef, nkProcDef, nkMethodDef, 
@@ -172,6 +174,29 @@ proc mapType(typ: PType): ESTypeKind =
   of tyCString: result = etyString
   of tyOptDeprecated: doAssert false
 
+const reservedJsWords = ["abstract", "await", "boolean", "break", "byte",
+    "case", "catch", "char", "class", "const", "continue", "debugger",
+    "default", "delete", "do", "double", "else", "enum", "export", "extends",
+    "false", "final", "finally", "float", "for", "function", "goto", "if",
+    "implements", "import", "in", "instanceof", "int", "interface", "let",
+    "long", "native", "new", "null", "package", "private", "protected",
+    "public", "return", "short", "static", "super", "switch", "synchronized",
+    "this", "throw", "throws", "transient", "true", "try", "typeof", "var",
+    "void", "volatile", "while", "with", "yield"]
+
+proc validJsName(name: string): bool =
+  result = true
+  
+  case name
+  of reservedJsWords:
+    return false
+  else:
+    discard
+  if name[0] in {'0'..'9'}: return false
+  for chr in name:
+    if chr notin {'A'..'Z','a'..'z','_','$','0'..'9'}:
+      return false
+
 proc mangleName(es: ESGen, s: PSym): string =
   ## Mangle a symbol name.
   ## If it's not a valid js name, do some common replacement.
@@ -182,34 +207,27 @@ proc mangleName(es: ESGen, s: PSym): string =
   ## intsets for the id?
   ## If it's included, lookup, otherwise do the replaces and append a counter if needed.
   ## Hopefully mangling will become easier...
-  proc validJsName(name: string): bool =
-    result = true
-    const reservedWords = ["abstract", "await", "boolean", "break", "byte",
-      "case", "catch", "char", "class", "const", "continue", "debugger",
-      "default", "delete", "do", "double", "else", "enum", "export", "extends",
-      "false", "final", "finally", "float", "for", "function", "goto", "if",
-      "implements", "import", "in", "instanceof", "int", "interface", "let",
-      "long", "native", "new", "null", "package", "private", "protected",
-      "public", "return", "short", "static", "super", "switch", "synchronized",
-      "this", "throw", "throws", "transient", "true", "try", "typeof", "var",
-      "void", "volatile", "while", "with", "yield"]
-    case name
-    of reservedWords:
-      return false
-    else:
-      discard
-    if name[0] in {'0'..'9'}: return false
-    for chr in name:
-      if chr notin {'A'..'Z','a'..'z','_','$','0'..'9'}:
-        return false
+  
 
-  if not s.loc.r.isNil: # exportc or already computed, return that
+  if not s.loc.r.isNil: 
+    # exportc or already computed, return that unless it's a field and a reservedword,
+    # then append _
+    if s.kind == skField and $s.loc.r in reservedJsWords:
+      s.loc.r.add("_")  
     return $s.loc.r
 
   result = s.name.s
   if not result.validJsName:
     # common ones:
-    result = result.multiReplace({"=":"eq","+":"plus","-":"minus","*":"star","/":"slash"})
+    result = result.multiReplace(
+      {"=":"eq",
+      "+":"plus",
+      "-":"minus",
+      "*":"star",
+      "/":"slash",
+      "class": "class_"
+      }
+    )
     if not result.validJsName: # still not valid? fine then
       var x = newStringOfCap(s.name.s.len)
       var i = 0
@@ -260,7 +278,8 @@ proc genProc(es: ESGen, prc: PSym) =
   ## The body of the proc is run through transf before generation.
   ## The complete function is added directly to the ast of the module, this places it before
   ## the first call that asked to generate it
-  let res = if prc.ast.len > resultPos :prc.ast[resultPos] else: nil
+  let res = if not prc.ast.isNil and prc.ast.len > resultPos :prc.ast[resultPos] else: nil
+  dbg prc.name.s
   let resT = prc.getReturnType
   var bdy = newBlockStmt()
   if not res.isNil:
@@ -302,7 +321,7 @@ proc genProc(es: ESGen, prc: PSym) =
       newReturnStmt(es.gen(res, bdy))
     )
 
-  ESBackend(es.graph.backend).ast.add( #CHECK:ME can I use stmntbody
+  es.backend.ast.add( #CHECK:ME can I use stmntbody
     newESFuncDecl(
       newESIdent(mangleName(es, prc), if res.isNil: "" else: resT.typeToString),
       bdy,
@@ -319,7 +338,7 @@ proc prepareMagic(es: ESGen, name: string): ESNode =
   var s = magicsys.getCompilerProc(es.graph, name)
   if s != nil:
     internalAssert es.config, s.kind in {skProc, skFunc, skMethod, skConverter}
-    if not ESBackend(es.graph.backend).generatedProcs.containsOrIncl(s.id):
+    if not es.backend.generatedProcs.containsOrIncl(s.id):
       genProc(es, s)
     result = newESIdent(es.mangleName(s))
   else:
@@ -452,7 +471,7 @@ proc genExcObjFunction(es: ESGen, t: PType, stmntbody: var ESNode, loc: SourceLo
         newProperty(es.gen(reclst, stmntbody), es.genDefaultLit(reclst.typ))
       )
     
-    es.graph.backend.ESBackend.ast.add newExcTypeDecl(
+    es.backend.ast.add newExcTypeDecl(
       newESIdent(t.sym.name.s), false#[t.sym.exportOrUsed]#, fields
     )
 
@@ -461,7 +480,7 @@ proc genEnumRepr(es: ESGen, t: PType) =
   var fields = newArrayExpr()
   for f in t.n:
     fields.add( newCallExpr( nsl, newESLiteral( makeJSString(f.sym.name.s)) ) )
-  es.graph.backend.ESBackend.ast.add(
+  es.backend.ast.add(
     newVarDecl(esConst,false, 
       [newVarDeclarator(newESIdent(es.mangleName(t.sym)), fields)]
     )
@@ -659,7 +678,7 @@ proc genDefaultLit(es: ESGen, typ: PType): ESNode =
       #dbg t.typeToString  
       result = newObjectExpr(props)
     of tyObject:
-      let b = es.graph.backend.ESBackend
+      let b = es.backend
       if not b.generatedTypeInfos.containsOrIncl(t.sym.id):
         if t.n.isCaseObj:
           b.ast.add(
@@ -692,13 +711,13 @@ proc genSym(es: ESGen, s: PSym, wantBaseSym = false): ESNode =
   of skType:
     #dbg "SYMTYP"
     if s.typ.mapType == etyObject:
-      if not es.graph.backend.ESBackend.generatedTypeInfos.containsOrIncl(s.id):
+      if not es.backend.generatedTypeInfos.containsOrIncl(s.id):
         if s.typ.skipTypes(skipPtrs).isException:
-          es.genExcObjFunction(s.typ, es.graph.backend.ESBackend.ast)
+          es.genExcObjFunction(s.typ, es.backend.ast)
         elif s.typ.n.isCaseObj:
-          es.graph.backend.ESBackend.ast.add(es.genCaseObjTypeInfo(s.typ, es.graph.backend.ESBackend.ast))
+          es.backend.ast.add(es.genCaseObjTypeInfo(s.typ, es.backend.ast))
         else:
-          es.graph.backend.ESBackend.ast.add(es.genObjTypeInfo(s.typ, es.graph.backend.ESBackend.ast))
+          es.backend.ast.add(es.genObjTypeInfo(s.typ, es.backend.ast))
       if s.typ.skipTypes(skipPtrs).isException:
         result = newESIdent(s.typ.sym.name.s, loc = es.infoToSL(s.info))
       else:
@@ -707,6 +726,10 @@ proc genSym(es: ESGen, s: PSym, wantBaseSym = false): ESNode =
       result = newESIdent("", "MAYBEBUG", loc = es.infoToSL(s.info))
   of skLabel:
     result = newESIdent(es.mangleName(s),loc = es.infoToSL(s.info))
+  of skProcKinds:
+    if not es.backend.generatedProcs.contains(s.id):
+      es.genProc(s)
+    result = newESIdent(es.mangleName(s), s.typ.typeToString,loc = es.infoToSL(s.info))
   else:
     #dbg "NON SPECIALIZED SYM: ", s.name.s, $s.kind
     result = newESIdent(es.mangleName(s), s.typ.typeToString,loc = es.infoToSL(s.info))
@@ -784,8 +807,8 @@ proc magicToProc(magic: TMagic): string =
   # of mModI: "modInt"
   # of mSucc: "addInt"
   # of mPred: "subInt"
-  #of mMinI: "nimMin"
-  #of mMaxI: "nimMax"
+  of mMinI: "nimMin"
+  of mMaxI: "nimMax"
   # of mUnaryMinusI: "negInt"
   # of mUnaryMinusI64: "negInt64"
   # of mAbsI: "absInt"
@@ -802,11 +825,25 @@ proc magicToProc(magic: TMagic): string =
   of mSetLengthSeq: "esSetLenSeq"
   else:  ""
     
+proc genDotCall(es: ESGen, n: PNode, stmntbody: var ESNode, loc: SourceLocation = nil) : ESNode=
+  ## Generate a call to non-magic procs that's done from a field of an object:
+  ## a.myfun(x) where
+  ## type A = object
+  ##   myfun: proc(x:int)
+
+  var args = newSeq[ESNode]()
+  for i, arg in n:
+    if i == 0: continue
+    args.add(es.gen(arg, stmntbody))
+    
+  result = newCallExpr(
+    gen(es, n[0], stmntbody), args
+  )
 
 proc genCall(es: ESGen, n: PNode, stmntbody: var ESNode, loc: SourceLocation = nil) : ESNode=
   ## Generate a call to non-magic procs. Also genProc if it's the first time this symbol
   ## is called.
-  if not es.graph.backend.ESBackend.generatedProcs.containsOrIncl(n[0].sym.id):
+  if not es.backend.generatedProcs.containsOrIncl(n[0].sym.id):
     es.genProc(n[0].sym)
 
   var args = newSeq[ESNode]()
@@ -817,6 +854,51 @@ proc genCall(es: ESGen, n: PNode, stmntbody: var ESNode, loc: SourceLocation = n
   result = newCallExpr(
     genSym(es, n[0].sym), args
   )
+
+proc genPatternedCall(es: ESGen, n: PNode, stmntbody: var ESNode, loc: SourceLocation = nil) : ESNode=
+  ## Generate a call to non-magic procs. Also genProc if it's the first time this symbol
+  ## is called.
+  ## This substitutes # for the first param the first time it's seen, then the second param, etc
+  ## @ represents the "rest" of the params.
+  ## I really don't like this, I'd prefer if the ast itself was rewritten in some earlier pass
+  # Can we have importcpp without pattern?
+  let pattern = $n[0].sym.loc.r
+  #dbg pattern
+  var rest = newSeq[ESNode]()
+  for i, arg in n:
+    if i == 0: continue
+    rest.add(es.gen(arg, stmntbody))
+
+  var emitstr : string = ""
+  var diesiscounter = 0
+
+  if pattern.contains("#") or pattern.contains("@"):
+    for part in tokenize(pattern, {'#','@'}):
+      if part.isSep:
+        if part.token == "#":
+          emitstr.add render(rest[diesiscounter])
+          inc diesiscounter
+        elif part.token == "@":
+          while diesiscounter < rest.len:
+            emitstr.add render(rest[diesiscounter])
+            if diesiscounter != rest.len-1:
+              emitstr.add ','
+            inc diesiscounter
+      else:
+        emitstr.add part.token
+  else:
+    emitstr.add render(rest[diesiscounter])
+    inc diesiscounter
+    emitstr.add("." & pattern & "(")
+    while diesiscounter < rest.len:
+      emitstr.add render(rest[diesiscounter])
+      if diesiscounter != rest.len-1:
+        emitstr.add ','
+      inc diesiscounter
+    emitstr.add(")")
+
+  result = newESEmitExpr( emitstr )
+
 
 proc genEcho(es: ESGen, n: PNode, stmntbody: var ESNode): ESNode =
   ## Generate a call to echo.
@@ -928,7 +1010,7 @@ proc genMagic(es: ESGen, n: PNode, stmntbody: var ESNode, loc: SourceLocation = 
     )
   #  of mAppendStrCh, mAppendSeqElem:
   #    result = newMemberCallExpr(es.gen(n[1], stmntbody), newESIdent("push"), es.gen(n[2], stmntbody))
-  of mLengthStr, mLengthSeq, mLengthArray: result = newMemberExpr(es.gen(n[1], stmntbody), newESIdent("length"), true)
+  of mLengthStr, mLengthSeq, mLengthArray, mLengthOpenArray: result = newMemberExpr(es.gen(n[1], stmntbody), newESIdent("length"), true)
   of mOrd:
     #dbg es.config.treeToYaml(n)
     case skipTypes(n[1].typ, abstractVar + abstractRange).kind
@@ -1017,6 +1099,8 @@ proc genMagic(es: ESGen, n: PNode, stmntbody: var ESNode, loc: SourceLocation = 
     #dbg n.typ.typeToString
     # TODO: non 0 based, non arraylike
     result = newESLiteral(0)
+  of mMinI, mMaxI:
+    result = es.genMagicCall(n, stmntbody)
   of mSwap:
     # [a, b] = [b, a]; es6 ftw
     result = newAsgnExpr("=",
@@ -1198,13 +1282,13 @@ proc genObjConstrCall(es: ESGen, n: PNode, stmntbody: var ESNode, loc: SourceLoc
   #if n[0].kind != nkSym: # ie a nkPar, eg (ref ValueError)(msg: "wrong value")
   let baseT = n[0].typ.skipTypes(skipPtrs)
   #dbg "OBJC ", $n[0].typ.kind, " ", $n.typ.kind
-  if not es.graph.backend.ESBackend.generatedTypeInfos.containsOrIncl(baseT.sym.id):
+  if not es.backend.generatedTypeInfos.containsOrIncl(baseT.sym.id):
     if baseT.isException:
       es.genExcObjFunction(baseT, stmntbody)
     elif baseT.n.isCaseObj:
-      stmntbody.add(es.genCaseObjTypeInfo(baseT, stmntbody))
+      es.backend.ast.add(es.genCaseObjTypeInfo(baseT, es.backend.ast))
     else:
-      stmntbody.add(es.genObjTypeInfo(baseT, stmntbody))
+      es.backend.ast.add(es.genObjTypeInfo(baseT, es.backend.ast))
 
   #dbg "GOBJC", n.typ.typeToString
   #dbg es.config.treeToYaml(n)
@@ -1350,8 +1434,11 @@ proc genLit(es: ESGen, n: PNode, stmntbody: var ESNode, loc: SourceLocation = ni
   of nkNilLit:
     result = es.genDefaultLit(n.typ)
   of nkStrLit..nkTripleStrLit:
-    let magicid = es.prepareMagic("esNimStrLit")
-    result = newCallExpr(magicid, newESLiteral(makeJSString(n.strVal, false)))
+    if n.typ.kind == tyCString:
+      result = newESLiteral(makeJSString(n.strVal, false))
+    else:
+      let magicid = es.prepareMagic("esNimStrLit")
+      result = newCallExpr(magicid, newESLiteral(makeJSString(n.strVal, false)))
   of nkFloatLit..nkFloat64Lit:
     result = newESLiteral(n.floatVal)
   else:
@@ -1359,26 +1446,49 @@ proc genLit(es: ESGen, n: PNode, stmntbody: var ESNode, loc: SourceLocation = ni
       "genLit not handled"
 
 
+proc isPatternImport(sym:PSym):bool =
+  #dbg sym.ast[pragmasPos].findPragma(wImportCpp).kind
+  if sym.ast.isNil: return false 
+  if sym.ast.len < pragmasPos: return false
+  if not sym.ast[pragmasPos].findPragma(wImportCpp).isNil or 
+    not sym.ast[pragmasPos].findPragma(wImportJs).isNil:
+    #dbg renderTree(symnode)
+    result = true
+
+
+
+
 proc genCallOrMagic(es: ESGen, n: PNode, stmntbody: var ESNode, loc: SourceLocation = nil): ESNode =
   ## A nkCall node, dispatch to the right path if a magic is present
-  dbg "SYMID: ", n[0].sym.id, " name ", mangleName(es, n[0].sym), " magic ", n[0].sym.magic
-  if n[0].sym.flags.contains(sfImportc) or n[0].sym.typ.kind == tyProc:
-    es.graph.backend.ESBackend.generatedProcs.incl(n[0].sym.id)
+  dbg n.kind, " ", n[0].kind
+  dbg renderTree(n)
+  #dbg "SYMID: ", n[0].sym.id, " name ", mangleName(es, n[0].sym), " magic ", n[0].sym.magic
+  if n[0].kind == nkSym and (n[0].sym.flags.contains(sfImportc) or n[0].sym.kind notin skProcKinds):
+    # no need to generate imported stuff and
+    # procvars get generated on creation/assignment 
+    es.backend.generatedProcs.incl(n[0].sym.id)
   
-  #dbg n[0].sym.typ.typeToString
+  #dbg es.config.symToYaml(n[0].sym)
 
-  if (n[0].kind == nkSym) and (n[0].sym.magic != mNone):
-    #dbg renderTree(n)
-    if n[0].sym.magic == mNew:
-      # new is a exprstatement in nim, but for js we need multiple stmts
-      result = genMagic(es, n, stmntbody)
-    elif isEmptyType(n.typ):  # a magic call stmt
-      result = newExpressionStmt(genMagic(es, n, stmntbody))
-    else: result = genMagic(es, n, stmntbody)
-  elif isEmptyType(n.typ):  # a call stmt
-    result = newExpressionStmt(genCall(es, n, stmntbody)) # TODO: use the fact that no result is needed
-  else:
-    result = genCall(es, n, stmntbody)
+  if n[0].kind == nkSym:
+    if not n[0].sym.isPatternImport:
+      dbg n[0].sym.kind, n[0].sym.name.s, n[0].sym.typ.typeToString
+      if (n[0].sym.magic != mNone):
+        #dbg renderTree(n)
+        if n[0].sym.magic == mNew:
+          # new is a exprstatement in nim, but for js we need multiple stmts
+          result = genMagic(es, n, stmntbody)
+        elif isEmptyType(n.typ):  # a magic call stmt
+          result = newExpressionStmt(genMagic(es, n, stmntbody))
+        else: result = genMagic(es, n, stmntbody)
+      elif isEmptyType(n.typ):  # a call stmt
+        result = newExpressionStmt(genCall(es, n, stmntbody)) # TODO: use the fact that no result is needed
+      else:
+        result = genCall(es, n, stmntbody)
+    else:
+      result = genPatternedCall(es, n , stmntbody)
+  elif (n[0].kind == nkDotExpr):
+    result = es.genDotCall(n, stmntbody)
 
 proc genVar(es: ESGen, n: PNode, stmntbody: var ESNode, loc: SourceLocation = nil): ESNode =
   ## var x = 0
@@ -1392,9 +1502,10 @@ proc genVar(es: ESGen, n: PNode, stmntbody: var ESNode, loc: SourceLocation = ni
   for v in n.sons:
     #v[0].sym.loc.storage = OnHeap
     # TODO: handle noinit?
+    if v[0].sym.flags.contains(sfImportc): continue 
     if v[2].kind == nkEmpty: # no initial value
-      dbg renderTree(v)
-      dbg v[0].sym.typ
+      #dbg renderTree(v)
+      #dbg v[0].sym.typ
   
       result.add(
         newVarDecl(
@@ -1413,6 +1524,7 @@ proc genLet(es: ESGen, n: PNode, stmntbody: var ESNode, loc: SourceLocation = ni
   ## let x = 123 -> const x = 123
   result = newBlockStmt()
   for v in n.sons:
+    if v[0].sym.flags.contains(sfImportc): continue
     #dbg "letchild"
     #dbg es.config.treeToYaml(v)
     result.add(
@@ -1515,6 +1627,7 @@ proc genConst(es: ESGen, n: PNode, stmntbody: var ESNode, loc: SourceLocation = 
   ## - owned by mainmodule
   result = newBlockStmt()
   for c in n.sons:
+    if c[0].sym.flags.contains(sfImportc): continue
     if c[0].sym.exportOrUsed and c[0].sym.owner.flags.contains(sfMainModule):
       result.add(
         newVarDecl(
@@ -1917,7 +2030,7 @@ proc genLambda(es: ESGen, n: PNode, stmntbody: ESNode): ESNode =
   ## let a = (x) => `echo`(x) or function(x){`echo`(x)}
   let prc = n[0].sym
   
-  es.graph.backend.ESBackend.generatedProcs.incl(prc.id)
+  es.backend.generatedProcs.incl(prc.id)
 
   let res = if prc.ast.len > resultPos :prc.ast[resultPos] else: nil
   dbg prc.typ.typeToString
@@ -2057,9 +2170,11 @@ proc gen(es: ESGen, n: PNode, stmntbody: var ESNode, loc: SourceLocation = nil):
     # This is "when nimvm" node ???
     result = gen(es, n[1][0], stmntbody)
   of nkLambdaKinds:
-    dbg es.config.treeToYaml(n)
-    stderr.write "WIP nkLambda"
+    #dbg es.config.treeToYaml(n)
+    #stderr.write "WIP nkLambda"
     result = es.genLambda(n, stmntbody)
+  of nkObjDownConv, nkObjUpConv: # TODO: figure this out
+    result = gen(es, n[0], stmntbody)
   else: 
     dbg n.kind
     dbg es.config.treeToYaml(n)
@@ -2070,10 +2185,6 @@ proc gen(es: ESGen, n: PNode, stmntbody: var ESNode, loc: SourceLocation = nil):
   #[
   of nkClosure:
   of nkPar:
-  of nkObjDownConv:
-  of nkObjUpConv:
-  of nkCast:
-  of nkLambdaKinds
   of nkType:
   of nkBlockExpr:
   ]#

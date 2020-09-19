@@ -110,7 +110,10 @@ proc renderWithStmt(s:ESNode, indlvl=0):string =
   "//withstmt not supported for now"
 
 proc renderReturnStmt(s:ESNode, indlvl=0):string =
-  result = "return " & render(s.argument) & ";"
+  if not s.argument.isNil and s.argument.typ != ekEmptyStatement:
+    result = "return " & render(s.argument) & ";"
+  else:
+    result = "return;"
 
 proc renderLabeledStmt(s:ESNode, indlvl = 0):string = 
   result = render(s.llabel) & ": {\n"
