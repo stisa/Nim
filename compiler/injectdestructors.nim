@@ -728,6 +728,9 @@ proc p(n: PNode; c: var Con; s: var Scope; mode: ProcessMode): PNode =
       for i in ord(n.kind in {nkObjConstr, nkClosure})..<n.len:
         if n[i].kind == nkExprColonExpr:
           result[i][1] = p(n[i][1], c, s, m)
+        elif n[i].kind == nkRange:
+          result[i][0] = p(n[i][0], c, s, m)
+          result[i][1] = p(n[i][1], c, s, m)
         else:
           result[i] = p(n[i], c, s, m)
       if mode == normal and isRefConstr:
@@ -1003,7 +1006,8 @@ proc injectDestructorCalls*(g: ModuleGraph; owner: PSym; n: PNode): PNode =
     echoCfg(c.g)
     echo n
 
-  computeCursors(owner, n, g.config)
+  if optCursorInference in g.config.options:
+    computeCursors(owner, n, g.config)
 
   var scope: Scope
   let body = p(n, c, scope, normal)
