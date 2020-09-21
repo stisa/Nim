@@ -23,9 +23,11 @@ Trick 2 (TODO:)
 -------
 It is preferable to generate '||' and '&&' if possible since that is more
 idiomatic and hence should be friendlier for the JS JIT implementation. However
-code like ``foo and (let bar = baz())`` cannot be translated this way. Instead
+code like ``foo and (let bar = baz(); bar)`` cannot be translated this way. Instead
 the expressions need to be transformed into statements. ``isSimpleExpr``
 implements the required case distinction.
+
+Actually, foo && (bar=baz(), bar) seems to work?
 
 """
 
@@ -52,7 +54,7 @@ type
 
   ESBackend = ref object of RootObj
     ast: ESNode
-    generatedProcs: IntSet
+    generatedSyms: IntSet
     generatedTypeInfos: IntSet
     sigConflicts: CountTable[string]
     tmpcount : Natural
@@ -87,7 +89,7 @@ template dbg(str: varargs[string, `$`]) =
 template backend(es: ESGen): ESBackend = es.graph.backend.ESBackend
 
 proc hasProc(b: ESBackend, s: PSym): bool =
-  b.generatedProcs.contains(s.id)
+  b.generatedSyms.contains(s.id)
 
 proc hasTypeInfo(b: ESBackend, t: PType): bool =
   b.generatedTypeInfos.contains(t.sym.id)
@@ -95,7 +97,7 @@ proc hasTypeInfo(b: ESBackend, t: PType): bool =
 proc newBackend(): ESBackend =
   new(result)
   result.ast = newESModule(":codegen-temp-module")
-  result.generatedProcs = initIntSet()
+  result.generatedSyms = initIntSet()
   result.generatedTypeInfos = initIntSet()
   result.sigConflicts = initCountTable[string]()
 
@@ -270,16 +272,16 @@ proc makeJSString(s: string, escapeNonAscii = false): string =
 proc gen(es: ESGen, n: PNode, stmntbody: var ESNode, loc: SourceLocation = nil): ESNode
 proc genDefaultLit(es: ESGen, typ: PType): ESNode
 
-
 proc genProc(es: ESGen, prc: PSym) =
   ## Generate a js function based on the prc ast.
   ## If there's a result, produce var result = defaultLit(T)
   ## and corresponding return result
   ## The body of the proc is run through transf before generation.
   ## The complete function is added directly to the ast of the module, this places it before
-  ## the first call that asked to generate it
+  ## the first call that asked to generate it.
+  ## 
   let res = if not prc.ast.isNil and prc.ast.len > resultPos :prc.ast[resultPos] else: nil
-  dbg prc.name.s
+  #dbg prc.name.s, " ", prc.flags, " ", prc.kind, " ", prc.typ.callConv
   let resT = prc.getReturnType
   var bdy = newBlockStmt()
   if not res.isNil:
@@ -338,7 +340,7 @@ proc prepareMagic(es: ESGen, name: string): ESNode =
   var s = magicsys.getCompilerProc(es.graph, name)
   if s != nil:
     internalAssert es.config, s.kind in {skProc, skFunc, skMethod, skConverter}
-    if not es.backend.generatedProcs.containsOrIncl(s.id):
+    if not es.backend.generatedSyms.containsOrIncl(s.id):
       genProc(es, s)
     result = newESIdent(es.mangleName(s))
   else:
@@ -449,7 +451,6 @@ proc genCaseObjTypeDecl*(name: ESNode, exp:bool, fields: varargs[ESNode]): ESNod
     exp
   )
 
-
 proc genExcObjFunction(es: ESGen, t: PType, stmntbody: var ESNode, loc: SourceLocation = nil)=
 
     var tt = t
@@ -543,8 +544,7 @@ proc genRecList(es: ESGen, n: PNode, fields: var seq[ESNode]) : ESNode =
     result.add(
       newAsgnExpr("=", newMemberExpr(newThisExpr(), fields[^1].key, computed=true), fields[^1].key)
     )
-  else: internalError(es.config, n.info, "createRecordVarAux")
-
+  else: internalError(es.config, n.info, "genRecList")
 
 proc genCaseObjTypeInfo(es: ESGen, t: PType, stmntbody: var ESNode, loc: SourceLocation = nil) : ESNode=
   ## Note that objects are sealed, ie you can't add or remove properties.
@@ -578,9 +578,6 @@ proc genCaseObjTypeInfo(es: ESGen, t: PType, stmntbody: var ESNode, loc: SourceL
     [newObjectExpr(fields)],
     false #exp
   )
-
-
-
 
 proc genObjTypeInfo(es: ESGen, t: PType, stmntbody: var ESNode, loc: SourceLocation = nil) : ESNode=
   ## Note that objects are sealed, ie you can't add or remove properties.
@@ -622,7 +619,6 @@ proc genObjTypeInfo(es: ESGen, t: PType, stmntbody: var ESNode, loc: SourceLocat
     [newObjectExpr(fields)],
     false #exp
   )
-  
 
 proc genDefaultLit(es: ESGen, typ: PType): ESNode =
   ## Generate a literal with default value for when we do things like
@@ -727,8 +723,20 @@ proc genSym(es: ESGen, s: PSym, wantBaseSym = false): ESNode =
   of skLabel:
     result = newESIdent(es.mangleName(s),loc = es.infoToSL(s.info))
   of skProcKinds:
-    if not es.backend.generatedProcs.contains(s.id):
+    if not es.backend.generatedSyms.contains(s.id):
       es.genProc(s)
+    dbg s.name.s, " ", s.flags, " ", s.kind, " ", s.typ.callConv
+    if s.typ.callConv == ccClosure:
+      # a proc is passed as variable
+      result = newESIdent(es.mangleName(s), s.typ.typeToString,loc = es.infoToSL(s.info))
+    else:
+      result = newESIdent(es.mangleName(s), s.typ.typeToString,loc = es.infoToSL(s.info))
+  of skConst:
+    # this is a hackish fix for some consts not getting marked as used, eg toTag in karax
+    dbg s.name.s, " ", s.flags
+    if not es.backend.generatedSyms.contains(s.id):
+      dbg es.config.treeToYaml(s.ast)
+      es.backend.ast.add es.gen(s.ast, es.backend.ast)    
     result = newESIdent(es.mangleName(s), s.typ.typeToString,loc = es.infoToSL(s.info))
   else:
     #dbg "NON SPECIALIZED SYM: ", s.name.s, $s.kind
@@ -744,12 +752,6 @@ proc isSimpleExpr(n: PNode): bool =
     result = true
   elif n.isAtom:
     result = true
-
-# proc getTemp(p: PProc, defineInLocals: bool = true): Rope =
-#   inc(p.unique)
-#   result = "Tmp$1" % [rope(p.unique)]
-#   if defineInLocals:
-#     p.locals.add(p.indentLine("var $1;$n" % [result]))
 
 proc genBinaryExpr(es: ESGen, operator: string, n: PNode, stmntbody: var ESNode): ESNode =
   ## Generate a binary or logical js expression, such as `a || b` or `a+b`
@@ -843,7 +845,7 @@ proc genDotCall(es: ESGen, n: PNode, stmntbody: var ESNode, loc: SourceLocation 
 proc genCall(es: ESGen, n: PNode, stmntbody: var ESNode, loc: SourceLocation = nil) : ESNode=
   ## Generate a call to non-magic procs. Also genProc if it's the first time this symbol
   ## is called.
-  if not es.backend.generatedProcs.containsOrIncl(n[0].sym.id):
+  if not es.backend.generatedSyms.containsOrIncl(n[0].sym.id):
     es.genProc(n[0].sym)
 
   var args = newSeq[ESNode]()
@@ -898,7 +900,6 @@ proc genPatternedCall(es: ESGen, n: PNode, stmntbody: var ESNode, loc: SourceLoc
     emitstr.add(")")
 
   result = newESEmitExpr( emitstr )
-
 
 proc genEcho(es: ESGen, n: PNode, stmntbody: var ESNode): ESNode =
   ## Generate a call to echo.
@@ -1107,156 +1108,6 @@ proc genMagic(es: ESGen, n: PNode, stmntbody: var ESNode, loc: SourceLocation = 
       newArrayExpr([es.gen(n[1], stmntbody), es.gen(n[2], stmntbody)]),
       newArrayExpr([es.gen(n[2], stmntbody), es.gen(n[1], stmntbody)])
     )
-
-    #[
-  of mShlI: 
-    if n[1].typ.size <= 4:
-      applyFormat("($1 << $2)", "($1 << $2)")
-    else:
-      applyFormat("($1 * Math.pow(2,$2))", "($1 * Math.pow(2,$2))")
-  of mMinI: applyFormat("nimMin($1, $2)", "nimMin($1, $2)")
-  of mMaxI: applyFormat("nimMax($1, $2)", "nimMax($1, $2)")
-  of mEqCString: applyFormat("($1 == $2)", "($1 == $2)")
-  of mEqProc: applyFormat("($1 == $2)", "($1 == $2)"
-  of mStrToStr, mUnown, mIsolate: applyFormat("$1", "$1")
-]#
-    # mModI,
-    # mShrI, mShlI, mAshrI, mBitandI, mBitorI, mBitxorI,
-    # mMinI, mMaxI,
-    # mModU,
-    # mXor, mEqCString, mEqProc,
-    # mUnaryMinusI, mUnaryMinusI64, mAbsI, mNot,
-    # mUnaryPlusI, mBitnotI,
-    # mUnaryPlusF64, mUnaryMinusF64,
-    # mCharToStr, mBoolToStr, mIntToStr, mInt64ToStr, mFloatToStr, mCStrToStr,
-    # mStrToStr
-  # of mAddI..mStrToStr: arith(p, n, r, op)
-  # of mRepr: genRepr(p, n, r)
-  # of mSwap: genSwap(p, n)
-  # of mAppendStrCh:
-  #   binaryExpr(p, n, r, "addChar",
-  #       "addChar($1, $2);")
-  # of mAppendStrStr:
-  #   var lhs, rhs: TCompRes
-  #   gen(p, n[1], lhs)
-  #   gen(p, n[2], rhs)
-
-  #   if skipTypes(n[1].typ, abstractVarRange).kind == tyCString:
-  #     r.res = "$1 += $2;" % [lhs.rdLoc, rhs.rdLoc]
-  #   else:
-  #     let (a, tmp) = maybeMakeTemp(p, n[1], lhs)
-  #     r.res = "$1.push.apply($3, $2);" % [a, rhs.rdLoc, tmp]
-  #   r.kind = resExpr
-  # of mAppendSeqElem:
-  #   var x, y: TCompRes
-  #   gen(p, n[1], x)
-  #   gen(p, n[2], y)
-  #   if mapType(n[2].typ) == etyPointer:
-  #     let c = "[$1, $2]" % [y.address, y.res]
-  #     r.res = "$1.push($2);" % [x.rdLoc, c]
-  #   elif needsNoCopy(p, n[2]):
-  #     r.res = "$1.push($2);" % [x.rdLoc, y.rdLoc]
-  #   else:
-  #     useMagic(p, "nimCopy")
-  #     let c = getTemp(p, defineInLocals=false)
-  #     lineF(p, "var $1 = nimCopy(null, $2, $3);$n",
-  #           [c, y.rdLoc, genTypeInfo(p, n[2].typ)])
-  #     r.res = "$1.push($2);" % [x.rdLoc, c]
-  #   r.kind = resExpr
-  # of mConStrStr:
-  #   genConStrStr(p, n, r)
-  # of mEqStr:
-  #   binaryExpr(p, n, r, "eqStrings", "eqStrings($1, $2)")
-  # of mLeStr:
-  #   binaryExpr(p, n, r, "cmpStrings", "(cmpStrings($1, $2) <= 0)")
-  # of mLtStr:
-  #   binaryExpr(p, n, r, "cmpStrings", "(cmpStrings($1, $2) < 0)")
-  # of mIsNil:
-  #   # we want to accept undefined, so we ==
-  #   if mapType(n[1].typ) != etyPointer:
-  #     unaryExpr(p, n, r, "", "($1 == null)")
-  #   else:
-  #     var x: TCompRes
-  #     gen(p, n[1], x)
-  #     r.res = "($# == null && $# === 0)" % [x.address, x.res]
-  # of mEnumToStr: genRepr(p, n, r)
-  # of mNew, mNewFinalize: genNew(p, n)
-  # of mChr: gen(p, n[1], r)
-  # of mArrToSeq:
-  #   if needsNoCopy(p, n[1]):
-  #     gen(p, n[1], r)
-  #   else:
-  #     var x: TCompRes
-  #     gen(p, n[1], x)
-  #     useMagic(p, "nimCopy")
-  #     r.res = "nimCopy(null, $1, $2)" % [x.rdLoc, genTypeInfo(p, n.typ)]
-  # of mDestroy: discard "ignore calls to the default destructor"
-  # of mOrd: genOrd(p, n, r)
-  # of mLengthStr, mLengthSeq, mLengthOpenArray, mLengthArray:
-  #   unaryExpr(p, n, r, "", "($1).length")
-  # of mHigh:
-  #   unaryExpr(p, n, r, "", "(($1).length-1)")
-  # of mInc:
-  #   if n[1].typ.skipTypes(abstractRange).kind in {tyUInt..tyUInt64}:
-  #     binaryUintExpr(p, n, r, "+", true)
-  #   else:
-  #     if optOverflowCheck notin p.options: binaryExpr(p, n, r, "", "$1 += $2")
-  #     else: binaryExpr(p, n, r, "addInt", "$1 = addInt($3, $2)", true)
-  # of ast.mDec:
-  #   if n[1].typ.skipTypes(abstractRange).kind in {tyUInt..tyUInt64}:
-  #     binaryUintExpr(p, n, r, "-", true)
-  #   else:
-  #     if optOverflowCheck notin p.options: binaryExpr(p, n, r, "", "$1 -= $2")
-  #     else: binaryExpr(p, n, r, "subInt", "$1 = subInt($3, $2)", true)
-  # of mSetLengthStr:
-  #   binaryExpr(p, n, r, "mnewString", "($1.length = $2)")
-  # of mSetLengthSeq:
-  #   var x, y: TCompRes
-  #   gen(p, n[1], x)
-  #   gen(p, n[2], y)
-  #   let t = skipTypes(n[1].typ, abstractVar)[0]
-  #   let (a, tmp) = maybeMakeTemp(p, n[1], x)
-  #   let (b, tmp2) = maybeMakeTemp(p, n[2], y)
-  #   r.res = """if ($1.length < $2) { for (var i=$4.length;i<$5;++i) $4.push($3); }
-  #              else { $4.length = $5; }""" % [a, b, createVar(p, t, false), tmp, tmp2]
-  #   r.kind = resExpr
-  # of mCard: unaryExpr(p, n, r, "SetCard", "SetCard($1)")
-  # of mLtSet: binaryExpr(p, n, r, "SetLt", "SetLt($1, $2)")
-  # of mLeSet: binaryExpr(p, n, r, "SetLe", "SetLe($1, $2)")
-  # of mEqSet: binaryExpr(p, n, r, "SetEq", "SetEq($1, $2)")
-  # of mMulSet: binaryExpr(p, n, r, "SetMul", "SetMul($1, $2)")
-  # of mPlusSet: binaryExpr(p, n, r, "SetPlus", "SetPlus($1, $2)")
-  # of mMinusSet: binaryExpr(p, n, r, "SetMinus", "SetMinus($1, $2)")
-  # of mIncl: binaryExpr(p, n, r, "", "$1[$2] = true")
-  # of mExcl: binaryExpr(p, n, r, "", "delete $1[$2]")
-  # of mInSet:
-  #   binaryExpr(p, n, r, "", "($1[$2] != undefined)")
-  # of mNewSeq: genNewSeq(p, n)
-  # of mNewSeqOfCap: unaryExpr(p, n, r, "", "[]")
-  # of mOf: genOf(p, n, r)
-  # of mDefault: genDefault(p, n, r)
-  # of mReset, mWasMoved: genReset(p, n)
-  # of mNLen..mNError, mSlurp, mStaticExec:
-  #   localError(p.config, n.info, errXMustBeCompileTime % n[0].sym.name.s)
-  # of mNewString: unaryExpr(p, n, r, "mnewString", "mnewString($1)")
-  # of mNewStringOfCap:
-  #   unaryExpr(p, n, r, "mnewString", "mnewString(0)")
-  # of mDotDot:
-  #   genProcForSymIfNeeded(p, n[0].sym)
-  #   genCall(p, n, r)
-  # of mParseBiggestFloat:
-  #   useMagic(p, "nimParseBiggestFloat")
-  #   genCall(p, n, r)
-  # of mSlice:
-  #   # arr.slice([begin[, end]]): 'end' is exclusive
-  #   var x, y, z: TCompRes
-  #   gen(p, n[1], x)
-  #   gen(p, n[2], y)
-  #   gen(p, n[3], z)
-  #   r.res = "($1.slice($2, $3+1))" % [x.rdLoc, y.rdLoc, z.rdLoc]
-  #   r.kind = resExpr
-  # of mMove:
-  #   genMove(p, n, r)
   else:
     translError(es, n):
       "genMagic: " & $op
@@ -1264,13 +1115,14 @@ proc genMagic(es: ESGen, n: PNode, stmntbody: var ESNode, loc: SourceLocation = 
 proc genAsgn(es: ESGen, lhs, rhs: PNode, stmntbody: var ESNode, loc: SourceLocation = nil): ESNode =
   ## Assignment. For vars, this is probably more complex than simply
   ## a = b due to the need to handle var T parameters and derefs., we propably
-  ## need to generate deepcopies somewhere.
-  dbg "GENASGN"
+  ## need to generate deepcopies if rhs.typ.maptype is not one of JSnumber, JSstring, JSnulll
+  #dbg "GENASGN"
   #dbg es.config.treeToYaml(lhs)
   #dbg es.config.treeToYaml(rhs)
   result = newExpressionStmt(
     newAsgnExpr("=", es.gen(lhs, stmntbody), es.gen(rhs, stmntbody))
   )
+
 # TODO: wrong for exception, missing generator function call
 proc genObjConstrCall(es: ESGen, n: PNode, stmntbody: var ESNode, loc: SourceLocation = nil) : ESNode=
   ## An object constructor.
@@ -1367,6 +1219,7 @@ proc genOfBranch(es: ESGen, n: PNode, stmntbody: var ESNode, loc: SourceLocation
         false
       )
     )
+
 proc genOfMultiBranch(es: ESGen, n: PNode, stmntbody: var ESNode, loc: SourceLocation= nil): seq[ESNode] =
   #dbg es.config.treeToYaml(n)
   result = @[]
@@ -1445,7 +1298,6 @@ proc genLit(es: ESGen, n: PNode, stmntbody: var ESNode, loc: SourceLocation = ni
     translError(es,n):
       "genLit not handled"
 
-
 proc isPatternImport(sym:PSym):bool =
   #dbg sym.ast[pragmasPos].findPragma(wImportCpp).kind
   if sym.ast.isNil: return false 
@@ -1455,9 +1307,6 @@ proc isPatternImport(sym:PSym):bool =
     #dbg renderTree(symnode)
     result = true
 
-
-
-
 proc genCallOrMagic(es: ESGen, n: PNode, stmntbody: var ESNode, loc: SourceLocation = nil): ESNode =
   ## A nkCall node, dispatch to the right path if a magic is present
   dbg n.kind, " ", n[0].kind
@@ -1466,7 +1315,7 @@ proc genCallOrMagic(es: ESGen, n: PNode, stmntbody: var ESNode, loc: SourceLocat
   if n[0].kind == nkSym and (n[0].sym.flags.contains(sfImportc) or n[0].sym.kind notin skProcKinds):
     # no need to generate imported stuff and
     # procvars get generated on creation/assignment 
-    es.backend.generatedProcs.incl(n[0].sym.id)
+    es.backend.generatedSyms.incl(n[0].sym.id)
   
   #dbg es.config.symToYaml(n[0].sym)
 
@@ -1520,6 +1369,7 @@ proc genVar(es: ESGen, n: PNode, stmntbody: var ESNode, loc: SourceLocation = ni
           [newVarDeclarator(newESIdent(mangleName(es, v[0].sym), v[0].sym.typ.typeToString), es.gen(v[2], stmntbody))]
         )
       )
+
 proc genLet(es: ESGen, n: PNode, stmntbody: var ESNode, loc: SourceLocation = nil): ESNode =
   ## let x = 123 -> const x = 123
   result = newBlockStmt()
@@ -1578,7 +1428,6 @@ proc genBracket(es: ESGen, n: PNode, stmntbody: var ESNode, loc: SourceLocation 
     if mappedarrtype != "":
       result = newNewExpr(newESIdent(mappedarrtype), result)
 
-
 proc genCurly(es: ESGen, n: PNode, stmntbody: var ESNode, loc: SourceLocation = nil): ESNode =  
   ## Nim Sets are mapped to js Set type
   result = newArrayExpr()
@@ -1593,7 +1442,6 @@ proc genCurly(es: ESGen, n: PNode, stmntbody: var ESNode, loc: SourceLocation = 
   
   result = newNewExpr(newESIdent("Set"), result)
   
-
 proc genBracketExpr(es: ESGen, n: PNode, stmntbody: var ESNode, loc: SourceLocation = nil): ESNode =
   ## An array access expression
   #dbg es.config.treeToYaml(n)
@@ -1628,7 +1476,10 @@ proc genConst(es: ESGen, n: PNode, stmntbody: var ESNode, loc: SourceLocation = 
   result = newBlockStmt()
   for c in n.sons:
     if c[0].sym.flags.contains(sfImportc): continue
-    if c[0].sym.exportOrUsed and c[0].sym.owner.flags.contains(sfMainModule):
+    #dbg c[0].sym.name.s, " ", c[0].sym.flags, " mainowned:", c[0].sym.skipGenericOwner.flags.contains(sfMainModule)
+    
+    if c[0].sym.exportOrUsed:# and c[0].sym.owner.flags.contains(sfMainModule):
+      es.backend.generatedSyms.incl(c[0].sym.id)
       result.add(
         newVarDecl(
           esConst, c[0].sym.exportOrUsed and c[0].sym.owner.flags.contains(sfMainModule),
@@ -1652,6 +1503,7 @@ proc genDotExpr(es: ESGen, n: PNode, stmntbody: var ESNode, loc: SourceLocation 
     result = newMemberExpr(
       es.gen(n[0],stmntbody), es.gen(n[1],stmntbody), true
     )
+
 proc genCheckedFieldExpr(es: ESGen, n: PNode, stmntbody: var ESNode, loc: SourceLocation = nil): ESNode =
   ## Checked field access, eg x.w where w is a case obj in k
   ## In plain code, this would be
@@ -1692,7 +1544,6 @@ proc genCheckedFieldExpr(es: ESGen, n: PNode, stmntbody: var ESNode, loc: Source
   )
   result = newCondExpr( disc, valid, invalid )
 
-
 proc genAddr(es: ESGen, n: PNode, stmntbody: var ESNode, loc: SourceLocation = nil): ESNode =
   ## Addressing only works for `var`s, specifically it can be either
   ## a nim `var` or a param passed by `var T`
@@ -1718,21 +1569,26 @@ proc genAddr(es: ESGen, n: PNode, stmntbody: var ESNode, loc: SourceLocation = n
       "TODO addr: " & $n[0].kind
   #js: addr(() => { return `x`; }, (v) => { `x` = v; });
   result = newESAddr(addrsym, val)
-
   
 proc genDeref(es: ESGen, n: PNode, stmntbody: var ESNode, loc: SourceLocation = nil): ESNode =
   ## Dereference a nim ptr to a js value by accessing the deref property
   ## of a pointer generated by addr (or by constructing a ptr/ref)
-  let ident = es.gen(n[0], stmntbody)
+
   #dbg "DEREFIDENT:", n[0].kind
   #if n[0].kind == nkSym: dbg n[0].sym.name.s
   #dbg render(ident)
-  result = newMemberExpr(
-    ident, newESIdent("deref"), true
-  )
+
+  let ident = es.gen(n[0], stmntbody)
+  if n[0].kind == nkSym and n[0].sym.flags.contains(sfImportc):
+    # don't deref importcd refs
+    result = ident
+  else:
+    result = newMemberExpr(
+      ident, newESIdent("deref"), true
+    )
+
   #dbg "DEREF:"
   #dbg render(result)
-
 
 proc genIfExpr(es: ESGen, n: PNode, stmntbody: var ESNode, loc: SourceLocation = nil): ESNode =
   ## Start from an empty js stmt
@@ -1847,7 +1703,6 @@ proc genFinally(es: ESGen, n: PNode, stmntbody: var ESNode, loc: SourceLocation 
       es.infoToSL(n[0].info)
     )
     
-
 proc genTryStmt(es: ESGen, n: PNode, stmntbody: var ESNode, loc: SourceLocation = nil): ESNode =
   ## Maps nim try stmt to js try catch
   ## try branch -> try
@@ -2030,7 +1885,7 @@ proc genLambda(es: ESGen, n: PNode, stmntbody: ESNode): ESNode =
   ## let a = (x) => `echo`(x) or function(x){`echo`(x)}
   let prc = n[0].sym
   
-  es.backend.generatedProcs.incl(prc.id)
+  es.backend.generatedSyms.incl(prc.id)
 
   let res = if prc.ast.len > resultPos :prc.ast[resultPos] else: nil
   dbg prc.typ.typeToString
@@ -2081,7 +1936,6 @@ proc genLambda(es: ESGen, n: PNode, stmntbody: ESNode): ESNode =
     newESIdent(mangleName(es, prc), if res.isNil: "" else: resT.typeToString),
     loc = es.infoToSL(prc.info)
   )
-
 
 proc gen(es: ESGen, n: PNode, stmntbody: var ESNode, loc: SourceLocation = nil): ESNode =
   ## Big bad case stmt. Send each nodekind to its proper gen<Kind> function, ignoring some

@@ -508,6 +508,14 @@ let nimvm* {.magic: "Nimvm", compileTime.}: bool = false
 include "system/arithmetics"
 include "system/comparisons"
 
+when defined es:
+  # need strlit before apptype...
+  # can't have generic procs here as those don't generate a symbol but 
+  # an ident when going through emit. But what if we could mangle to the same ident?
+  # then they would work. TODO:?
+  proc esNimStrLit(c: cstring): string {.compilerproc, asmNoStackFrame.} =
+    {.emit: """`result` = [...(new TextEncoder).encode(`c`)]""".}
+
 const
   appType* {.magic: "AppType"}: string = ""
     ## A string that describes the application type. Possible values:

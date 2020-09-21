@@ -115,7 +115,8 @@ when defined es:
   # can't have generic procs here as those don't generate a symbol but 
   # an ident when going through emit. But what if we could mangle to the same ident?
   # then they would work. TODO:?
-  proc esNimStrLit(c: cstring): string {.compilerproc, asmNoStackFrame.} =
+  proc esNimStrLit2(c: cstring): string {.compilerproc, asmNoStackFrame.} =
+    # had to move this to system to avoid "system needs..."
     {.emit: """`result` = [...(new TextEncoder).encode(`c`)]""".}
   proc esNimStrToJsStr(c: string): cstring {.compilerproc, asmNoStackFrame.} =
     {.emit: """`result` = (new TextDecoder).decode(new Uint8Array(`c`))""".}
